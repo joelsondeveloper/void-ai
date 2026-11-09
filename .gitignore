@@ -1,0 +1,40 @@
+# Credentials and local overrides
+.env
+.env.*
+!.env.example
+.envrc
+.netrc
+secrets/
+.secrets/
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+.npmrc
+credentials*.json
+service-account*.json
+
+# Dependencies and build output
+node_modules/
+dist/
+build/
+out/
+.next/
+coverage/
+next-env.d.ts
+*.tsbuildinfo
+
+# Local data, logs and test artifacts
+prompt.txt
+.data/
+*.sqlite*
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+*.log
+logs/
+test-results/
+playwright-report/

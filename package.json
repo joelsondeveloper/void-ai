@@ -1,0 +1,55 @@
+{
+  "name": "void-ai",
+  "version": "1.0.0",
+  "description": "**One intelligence. Multiple minds.**",
+  "main": "index.js",
+  "scripts": {
+    "test": "node --unhandled-rejections=strict --import tsx --test \"tests/**/*.test.ts\"",
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "demo:plan": "tsx src/examples/manualPlan.ts",
+    "demo:plan:live": "node --env-file-if-exists=.env --import tsx src/examples/manualPlan.ts --live",
+    "demo:governance": "tsx src/examples/governedPlan.ts",
+    "demo:main": "tsx src/examples/mainAgent.ts --demo",
+    "chat:void": "tsx src/examples/mainAgent.ts",
+    "chat:void:live": "node --env-file-if-exists=.env --import tsx src/examples/mainAgent.ts --live",
+    "benchmark:models:live": "node --env-file-if-exists=.env --import tsx src/examples/mainAgent.ts --benchmark",
+    "benchmark:research:live": "node --env-file-if-exists=.env --import tsx src/examples/benchmarkResearch.ts",
+    "start": "node dist/index.js",
+    "dev:web": "node --env-file-if-exists=.env --import tsx web/server.mjs --dev",
+    "dev:web:live": "node --env-file-if-exists=.env --import tsx web/server.mjs --dev --live",
+    "typecheck:web": "tsc -p web/tsconfig.json",
+    "build:web": "next build web --webpack",
+    "start:web": "node --env-file-if-exists=.env --import tsx web/server.mjs",
+    "start:web:live": "node --env-file-if-exists=.env --import tsx web/server.mjs --live",
+    "test:web:browser": "node --test web/browser/*.test.mjs",
+    "lint": "biome lint src tests web/app web/browser web/server.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/joelsondeveloper/void-ai.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/joelsondeveloper/void-ai/issues"
+  },
+  "homepage": "https://github.com/joelsondeveloper/void-ai#readme",
+  "devDependencies": {
+    "@biomejs/biome": "2.6.6",
+    "@types/node": "^26.6.5",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "playwright-core": "^1.65.0",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "next": "^16.4.5",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  }
+}
