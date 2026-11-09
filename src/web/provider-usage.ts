@@ -37,6 +37,14 @@ export class ProviderUsage {
       ) STRICT;
       CREATE INDEX IF NOT EXISTS provider_attempts_provider_at ON provider_attempts(provider, at);
     `);
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const columns = this.db.prepare("PRAGMA table_info(provider_attempts)").all();
+      if (!columns.some(({ name }) => name === "limit_evidence")) {
+        this.db.exec("ALTER TABLE provider_attempts ADD COLUMN limit_evidence TEXT");
+      }
+      this.db.exec("COMMIT");
+    } catch (error) { this.db.exec("ROLLBACK"); this.db.close(); throw error; }
   }
 
   private prune(at: number) {
@@ -47,11 +55,12 @@ export class ProviderUsage {
     if (event.elapsedMs === undefined) return;
     const at = this.now();
     this.db.prepare(`
-      INSERT INTO provider_attempts (at, provider, model, outcome, http, api_code, input, output, usd, limit_kind, retry_at)
-      VALUES (?, 'openrouter', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO provider_attempts (at, provider, model, outcome, http, api_code, input, output, usd, limit_kind, retry_at, limit_evidence)
+      VALUES (?, 'openrouter', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(at, event.returnedModel ?? event.requestedModel ?? "desconhecido", event.failure ? "failed" : "ok",
       event.httpStatus ?? null, event.apiCode ?? null, event.usage?.inputTokens ?? null, event.usage?.outputTokens ?? null,
-      event.costUsd ?? null, event.failure === "rate_limited" ? "rate" : null, event.retryAt ?? null);
+      event.costUsd ?? null, event.failure === "rate_limited" ? "rate" : null, event.retryAt ?? null,
+      event.limitEvidence ? JSON.stringify(event.limitEvidence) : null);
     this.prune(at);
   }
 
@@ -112,7 +121,7 @@ export class ProviderUsage {
     const models = this.db.prepare("SELECT model, " + aggregate + filter + " GROUP BY model ORDER BY model")
       .all(provider, since);
     const latest = this.db.prepare(`
-      SELECT limit_kind kind, at, retry_at retryAt, http httpStatus, api_code apiCode
+      SELECT limit_kind kind, at, retry_at retryAt, http httpStatus, api_code apiCode, limit_evidence evidenceJson
       FROM provider_attempts WHERE provider = ? AND model = ? AND at >= ? AND limit_kind IS NOT NULL
       ORDER BY at DESC, id DESC LIMIT 1
     `);
@@ -120,8 +129,12 @@ export class ProviderUsage {
       characters: null, credits: null, creditReports: 0, costUsd: null, costReports: 0 };
     const byModel = new Map(models.map((row) => [String(row.model), totals(row)]));
     return { totals: totals(aggregateRow), models: [...new Set([...configured, ...byModel.keys()])].map((model): ProviderModel => {
-      const event = latest.get(provider, model, since) as NonNullable<ProviderModel["limitEvent"]> | undefined;
-      return { ...(byModel.get(model) ?? missing), model, limitEvent: event ? { ...event } : null };
+      const row = latest.get(provider, model, since) as
+        (NonNullable<ProviderModel["limitEvent"]> & { evidenceJson: string | null }) | undefined;
+      if (!row) return { ...(byModel.get(model) ?? missing), model, limitEvent: null };
+      const { evidenceJson, ...event } = row;
+      if (evidenceJson) event.evidence = JSON.parse(evidenceJson);
+      return { ...(byModel.get(model) ?? missing), model, limitEvent: event };
     }) };
   }
 

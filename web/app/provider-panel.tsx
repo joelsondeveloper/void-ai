@@ -7,9 +7,12 @@ const labels = { normal: "Normal", near: "Perto do limite", exhausted: "Esgotado
 const windows: Record<string, string> = { daily: "Diária (UTC)", weekly: "Semanal (UTC)", monthly: "Mensal (UTC)",
   monthly_period: "Mensal", annual_period: "Anual", weekly_period: "Semanal", minute: "Por minuto" };
 const accountIssue = {
-  not_configured: "Chave ausente", permission: "Acesso à cota recusado", rate: "Consulta de cota limitada",
-  unavailable: "Consulta indisponível",
+  not_checked: "Consulta externa pendente", not_configured: "Chave ausente", permission: "Acesso à cota recusado",
+  rate: "Consulta de cota limitada", network: "Falha de conexão", timeout: "Tempo de consulta esgotado",
+  invalid_response: "Resposta de cota inválida", unavailable: "Consulta indisponível",
 };
+const origins = { account: "Cota da conta OpenRouter", model: "Limite específico do modelo",
+  upstream: "Provedor upstream", platform: "Plataforma OpenRouter (escopo desconhecido)", unknown: "Origem desconhecida" };
 const numbers = new Intl.NumberFormat("pt-BR", { maximumFractionDigits: 6 });
 const date = new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" });
 const count = (value: number | null) => value === null ? "—" : numbers.format(value);
@@ -48,6 +51,16 @@ function Usage({ usage, voice }: { usage: ProviderTotals; voice: boolean }) {
   </dl>;
 }
 
+async function readDashboard(method: "GET" | "POST", signal: AbortSignal) {
+  const response = await fetch("/api/provider-usage", { method, signal,
+    ...(method === "POST" ? { headers: { "Content-Type": "application/json" }, body: "{}" } : {}) });
+  if (!response.ok) return { error: "HTTP " + response.status + (response.status === 404
+    ? " · endpoint indisponível. Reinicie o servidor local do VOID e recarregue a página." : ".") };
+  const snapshot = await response.json().catch(() => null) as ProviderDashboard | null;
+  if (!snapshot || !Array.isArray(snapshot.providers) || !snapshot.voiceLimits) return { error: "Resposta inválida da API local." };
+  return { snapshot };
+}
+
 function Model({ model, voice, now }: { model: ProviderModel; voice: boolean; now: number }) {
   const event = model.limitEvent;
   const active = event?.retryAt != null && event.retryAt > now;
@@ -55,11 +68,19 @@ function Model({ model, voice, now }: { model: ProviderModel; voice: boolean; no
     <div className="provider-model-title"><strong>{model.model}</strong>
       <Status value={active && event.kind === "quota" ? "exhausted" : "unknown"}/></div>
     <Usage usage={model} voice={voice}/>
-    <p className="technical">Cota individual, saldo e renovação desconhecidos.</p>
+    <p className="technical">{voice ? "Cota individual, saldo e renovação desconhecidos." : "Cota própria do modelo · desconhecida."}</p>
     {event && <p className="provider-event">{event.kind === "quota" ? "Cota reportada pelo provedor" : "Limite de requisições detectado"}
       {event.httpStatus === null ? "" : " · HTTP " + event.httpStatus}
       {event.apiCode === null || event.apiCode === event.httpStatus ? "" : " · código da API " + event.apiCode} · {time(event.at)}
-      {active ? " · nova tentativa a partir de " + time(event.retryAt) : ""}</p>}
+      {!voice && " · " + origins[event.evidence?.origin ?? "unknown"]}
+      {event.evidence?.upstream && " · " + event.evidence.upstream}
+      {event.evidence?.requestedModel && " · rota solicitada " + event.evidence.requestedModel}
+      {event.evidence?.returnedModel && " · modelo retornado " + event.evidence.returnedModel}
+      {event.evidence?.limit != null && " · limite " + count(event.evidence.limit)}
+      {event.evidence?.remaining != null && " · restante " + count(event.evidence.remaining)}
+      {event.evidence?.resetsAt != null && " · renovação " + time(event.evidence.resetsAt)}
+      {event.evidence?.retryAfterAt != null && " · Retry-After até " + time(event.evidence.retryAfterAt)}
+      {active ? " · pausa local até " + time(event.retryAt) : ""}</p>}
   </li>;
 }
 
@@ -73,10 +94,12 @@ function Provider({ report }: { report: ProviderReport }) {
       <span className="kicker">{report.enabled ? voice ? "Síntese habilitada" : "Rotas gratuitas" : "Geração desativada"}</span></div>
     <QuotaLine title={voice ? "Cota da assinatura (unidades do provedor)" : "Teto monetário da chave (USD)"} quota={account.quota}/>
     <p className="muted">{account.issue ? accountIssue[account.issue] + (account.httpStatus ? " · HTTP " + account.httpStatus : "")
+      + (account.errorCode ? " · " + account.errorCode : "")
       : "Consulta do provedor · " + time(account.checkedAt)}</p>
     {!voice && account.quota?.limit === null && <p className="muted">Chave sem teto monetário informado.</p>}
-    {!voice && <p className="muted">Cota de requisições gratuitas e renovação · desconhecidas.</p>}
-    {latest && <p className="provider-event">{latest.kind === "quota" ? "Último registro de cota esgotada" : "Último registro de limitação de requisições"} · {time(latest.at)}</p>}
+    {!voice && <QuotaLine title="Cota diária da conta OpenRouter (rotas gratuitas)" quota={account.freeRequests}/>}
+    {latest && <p className="provider-event">{latest.kind === "quota" ? "Último registro de cota esgotada" : "Último registro de limitação de requisições"} · {time(latest.at)}
+      {!voice && " · " + origins[latest.evidence?.origin ?? "unknown"]}</p>}
     <p className="muted">{voice ? "Excedente atual" : "Gasto reportado pela chave"} · {account.spend ? money(account.spend.amount, account.spend.currency) : "—"}
       {!voice && account.dailySpend !== null && " · Hoje " + money(account.dailySpend, "USD")}</p>
     {voice && <p className="muted">O valor da assinatura e o custo monetário por modelo estão indisponíveis.</p>}
@@ -93,22 +116,28 @@ export function ProviderPanel({ close }: { close: () => void }) {
   const controller = useRef<AbortController | null>(null);
   const [data, setData] = useState<ProviderDashboard>();
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(false);
+  const [error, setError] = useState<string>();
 
   const refresh = useCallback(async () => {
     controller.current?.abort();
     const pending = new AbortController();
     controller.current = pending;
     setLoading(true);
-    setError(false);
+    setError(undefined);
+    let stage = "Uso local";
     try {
-      const response = await fetch("/api/provider-usage", { method: "POST",
-        headers: { "Content-Type": "application/json" }, body: "{}", signal: pending.signal });
-      if (!response.ok) throw new Error();
-      const snapshot = await response.json() as ProviderDashboard;
-      if (!pending.signal.aborted) setData(snapshot);
+      const local = await readDashboard("GET", pending.signal);
+      if (pending.signal.aborted) return;
+      if (!local.snapshot) { setError(stage + " · " + local.error); return; }
+      setData(local.snapshot);
+      if (local.snapshot.providers.every(({ account }) => account.issue === "not_configured")) return;
+      stage = "Consulta de cotas";
+      const remote = await readDashboard("POST", pending.signal);
+      if (pending.signal.aborted) return;
+      if (remote.snapshot) setData(remote.snapshot);
+      else setError(stage + " · " + remote.error);
     } catch {
-      if (!pending.signal.aborted) setError(true);
+      if (!pending.signal.aborted) setError(stage + " · falha de conexão com o servidor local.");
     } finally {
       if (!pending.signal.aborted) setLoading(false);
     }
@@ -133,8 +162,8 @@ export function ProviderPanel({ close }: { close: () => void }) {
     <div className="provider-body">
       <div className="provider-intro"><p className="muted">Acompanhe cotas dos provedores e o consumo desta instalação.</p>
         <button className="button" type="button" disabled={loading} onClick={() => void refresh()}>Atualizar</button></div>
-      {loading && <p className="muted" role="status">Consultando provedores…</p>}
-      {error && <p className="provider-event" role="alert">Não foi possível atualizar o painel.</p>}
+      {loading && <p className="muted" role="status">{data ? "Consultando provedores…" : "Carregando uso local…"}</p>}
+      {error && <p className="provider-event" role="alert">{error}</p>}
       {data && <>
         <div className="provider-grid">{data.providers.map((report) => <Provider key={report.provider} report={report}/>)}</div>
         <article className="provider-card" aria-label="Limites internos de voz">
@@ -147,7 +176,7 @@ export function ProviderPanel({ close }: { close: () => void }) {
           {data.voiceLimits.retryAt !== null && <p className="provider-event">Pausa de síntese após limite do provedor até {time(data.voiceLimits.retryAt)}.</p>}
           <p className="muted">A voz local pt-BR pode reproduzir a resposta quando a síntese externa falha ou está desativada.</p>
         </article>
-        {data.legacy && data.legacy.attempts > 0 && <p className="muted">Histórico anterior do OpenRouter · {data.legacy.attempts} requisições, {data.legacy.failed} falhas. Modelo e motivo indisponíveis nesse contador.</p>}
+        {data.legacy && data.legacy.attempts > 0 && <p className="muted">Histórico anterior do OpenRouter · {data.legacy.attempts} requisições, {data.legacy.failed} falhas. Modelo e motivo indisponíveis nesse contador. Origem desconhecida.</p>}
         <p className="technical">Desde {time(data.since)}. Frações indicam requisições com métrica informada. Um traço indica dado indisponível.</p>
       </>}
     </div>

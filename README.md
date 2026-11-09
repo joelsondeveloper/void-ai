@@ -122,7 +122,7 @@ O servidor limita a síntese a uma chamada simultânea, seis por minuto, 2.000 c
 
 Abra **Uso** na barra superior. O painel mostra o consumo registrado nesta instalação em sete dias, separado por provedor e pelo modelo retornado ou solicitado. O OpenRouter fornece tokens e custo quando presentes em `usage`. A ElevenLabs fornece o custo de geração no cabeçalho `character-cost` quando disponível. Caracteres enviados são uma estimativa local. O histórico agregado antigo aparece separado porque o contador anterior guardava apenas tentativas, falhas e tokens agregados.
 
-Ao abrir ou atualizar o painel, o servidor consulta `GET /api/v1/key` no OpenRouter e `GET /v1/user/subscription` na ElevenLabs com as chaves locais. Essas consultas são somente leitura e o servidor reutiliza o resultado por um minuto. Se a chave da ElevenLabs tiver apenas escopo de síntese, a assinatura pode aparecer como desconhecida. Para exibi-la, a chave precisa também de permissão de leitura de usuário/assinatura. O gasto reportado pelo OpenRouter se refere à chave e o excedente da ElevenLabs se refere à assinatura. A cota de requisições grátis do OpenRouter e as cotas individuais dos modelos aparecem como desconhecidas quando indisponíveis.
+O painel carrega os dados do SQLite antes de consultar as cotas externas. Se um provedor falhar, o painel mantém as métricas locais e informa o erro daquela consulta. Para atualizar as cotas, o servidor consulta `GET /api/v1/key` no OpenRouter e `GET /v1/user/subscription` na ElevenLabs com as chaves locais. Essas consultas são somente leitura e o servidor reutiliza o resultado por um minuto. Se a chave da ElevenLabs tiver apenas escopo de síntese, a assinatura pode aparecer como desconhecida. Para exibi-la, a chave precisa também de permissão de leitura de usuário/assinatura. O gasto reportado pelo OpenRouter se refere à chave e o excedente da ElevenLabs se refere à assinatura. A cota diária de rotas gratuitas da conta vem de `free_model_daily_requests` quando disponível. Os eventos por modelo registram a rota solicitada, o modelo retornado e os sinais de limite disponíveis. Um 429 genérico aparece com origem desconhecida.
 
 No modo LIVE, as rotas do OpenRouter continuam restritas a modelos gratuitos verificados e ao teto de preço zero. Um 429 pausa a rota conforme `Retry-After` ou por um minuto na falta do cabeçalho. As rotas de reserva verificadas continuam disponíveis para as falhas elegíveis, como indisponibilidade, quando a política de execução permite. Os bloqueios locais de TTS aparecem em uma seção separada da cota da assinatura.
 
@@ -133,7 +133,8 @@ No modo LIVE, as rotas do OpenRouter continuam restritas a modelos gratuitos ver
 | Método | Rota | Função |
 | --- | --- | --- |
 | GET | `/api/system?effort=auto` | Modo, disponibilidade, esforço resolvido e modelos configurados |
-| POST | `/api/provider-usage` | Recebe `{}` e consulta métricas locais e cotas por endpoints de leitura |
+| GET | `/api/provider-usage` | Lê métricas e limites locais sem consultar os provedores |
+| POST | `/api/provider-usage` | Recebe `{}` e acrescenta cotas obtidas por consultas de leitura aos provedores |
 | GET / POST | `/api/sessions` | Listagem e criação de sessões |
 | GET | `/api/sessions/:session` | Histórico, estado atual e resultados |
 | POST | `/api/sessions/:session/messages` | Recebe ID da mensagem, texto e esforço. Retorna 202 |

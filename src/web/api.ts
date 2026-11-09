@@ -310,9 +310,9 @@ export function createWebApi(runtime: WebRuntime, port: () => number, voice: Ret
         json(response, 200, runtime.system(effort(url.searchParams.get("effort") ?? "auto")));
       } else if (resource === "usage" && sessionId === undefined && method === "GET") {
         json(response, 200, runtime.usage());
-      } else if (resource === "provider-usage" && sessionId === undefined && method === "POST") {
-        if (Object.keys(await body(request, 1024)).length) invalid();
-        json(response, 200, await runtime.providerDashboard());
+      } else if (resource === "provider-usage" && sessionId === undefined) {
+        if (method === "POST" && Object.keys(await body(request, 1024)).length) invalid();
+        json(response, 200, method === "GET" ? runtime.providerDashboard() : await runtime.refreshProviderDashboard());
       } else if (resource === "sessions" && sessionId === undefined) {
         if (method === "POST") {
           if (Object.keys(await body(request)).length) invalid();

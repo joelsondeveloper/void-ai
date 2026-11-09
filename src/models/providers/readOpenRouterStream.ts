@@ -4,9 +4,9 @@ export async function readOpenRouterStream(
   if (!response.body) throw new SyntaxError("Missing OpenRouter stream");
   const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
   let buffer = "", content = "";
-  let model: unknown, reason: unknown, usage: unknown, error: unknown;
+  let model: unknown, provider: unknown, reason: unknown, usage: unknown, error: unknown;
   let hasReasoning = false;
-  const completion = () => ({ model, usage, error, choices: [{ finish_reason: reason,
+  const completion = () => ({ model, provider, usage, error, choices: [{ finish_reason: reason,
     message: { content, ...(hasReasoning ? { reasoning: "present" } : {}) } }] });
   try {
     while (true) {
@@ -25,6 +25,7 @@ export async function readOpenRouterStream(
         if (!event || typeof event !== "object") throw new SyntaxError("Invalid OpenRouter event");
         const choice = event.choices?.[0];
         model = event.model ?? model;
+        provider = event.provider ?? provider;
         usage = event.usage ?? usage;
         error = event.error ?? choice?.error ?? error;
         reason = choice?.finish_reason ?? reason;

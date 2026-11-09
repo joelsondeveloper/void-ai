@@ -76,7 +76,7 @@ test("usage panel separates remote quotas and local voice caps, including on mob
   let reads = 0;
   const page = await open(t, { width: 320, height: 740 }, (page) =>
     page.route("**/api/provider-usage", async (route) => {
-      assert.equal(route.request().method(), "POST");
+      assert.equal(route.request().method(), "GET");
       reads++;
       await route.continue();
     }));
@@ -98,6 +98,34 @@ test("usage panel separates remote quotas and local voice caps, including on mob
   assert.equal(reads, 2);
   await page.keyboard.press("Escape");
   await panel.waitFor({ state: "hidden" });
+});
+
+test("usage panel renders local telemetry before quota refresh and keeps it on an invalid response", { timeout: 30_000 }, async (t) => {
+  const remote = Promise.withResolvers();
+  const page = await open(t, { width: 1200, height: 800 }, (page) =>
+    page.route("**/api/provider-usage", async (route) => {
+      if (route.request().method() === "POST") {
+        await remote.promise;
+        await route.fulfill({ json: { error: "private provider payload" } });
+        return;
+      }
+      const response = await route.fetch();
+      const dashboard = await response.json();
+      const openRouter = dashboard.providers[0];
+      openRouter.account.issue = "not_checked";
+      openRouter.models[0].limitEvent = { kind: "rate", at: Date.now(), retryAt: null, httpStatus: 429, apiCode: 429 };
+      await route.fulfill({ response, json: dashboard });
+    }));
+  t.after(() => remote.resolve());
+  await page.getByRole("button", { name: "Uso", exact: true }).click();
+  const panel = page.getByRole("dialog", { name: "Uso e limites" });
+  const local = panel.getByRole("article", { name: "Limites internos de voz" });
+  await local.waitFor();
+  await panel.getByText(/Último registro.*Origem desconhecida/).waitFor();
+  remote.resolve();
+  await panel.getByRole("alert").getByText("Consulta de cotas · Resposta inválida da API local.").waitFor();
+  assert.equal(await local.isVisible(), true);
+  assert.equal(await panel.getByText(/private provider payload/).count(), 0);
 });
 
 test("desktop · stop an active turn before a plan exists", { timeout: 30_000 }, async (t) => {

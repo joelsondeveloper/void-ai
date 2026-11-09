@@ -12,7 +12,7 @@ import type { ModelReasoning } from "../../types/model.js";
 import { currentGenerationTrace, type GenerationTrace } from "../generationTrace.js";
 import { isFreeOpenRouterRoute } from "../costAuthorization.js";
 import { readOpenRouterStream } from "./readOpenRouterStream.js";
-import { retryAfter } from "./retryAfter.js";
+import { openRouterLimitEvidence, type OpenRouterLimitEvidence } from "./openRouterLimits.js";
 
 type Failure = "transport" | "http" | "api" | "invalid_response" | "missing_content" | "incomplete";
 const finishReasons = new Set(["stop", "length", "content_filter", "tool_calls", "error"]);
@@ -45,6 +45,7 @@ export interface OpenRouterDiagnostic {
   returnedModel?: string;
   httpStatus?: number;
   retryAt?: number;
+  limitEvidence?: OpenRouterLimitEvidence;
   costUsd?: number;
   finishReason?: string;
   contentType?: string;
@@ -152,6 +153,10 @@ function parseCompletion(data: unknown, response: Response, diagnostic: OpenRout
 
   const apiError = body?.error ?? first?.error;
   const errorDetail = apiError == null ? undefined : collectApiError(apiError, diagnostic);
+  if (response.status === 429 || diagnostic.apiCode === 429 || diagnostic.apiErrorType === "rate_limit_exceeded") {
+    diagnostic.limitEvidence = openRouterLimitEvidence(apiError, response.headers, Date.now(),
+      diagnostic.requestedModel, diagnostic.returnedModel, body?.provider);
+  }
   if (!response.ok) {
     throw new OpenRouterError("http", `OpenRouter HTTP ${response.status} (${errorDetail ?? "no structured API error"}).`);
   }
@@ -256,7 +261,6 @@ export class OpenRouterProvider implements ModelProvider {
       : request.onText ? idle.signal : request.signal
         ? AbortSignal.any([request.signal, AbortSignal.timeout(60_000)]) : AbortSignal.timeout(60_000);
     let timer: ReturnType<typeof setTimeout> | undefined;
-    let headers: Headers | undefined;
     const refreshTimeout = () => {
       if (!request.onText) return;
       clearTimeout(timer);
@@ -326,7 +330,6 @@ export class OpenRouterProvider implements ModelProvider {
         signal: signal ?? null,
       });
       diagnostic.httpStatus = response.status;
-      headers = response.headers;
       let data: unknown;
       try {
         data = response.ok && response.headers.get("content-type")?.includes("text/event-stream")
@@ -371,9 +374,8 @@ export class OpenRouterProvider implements ModelProvider {
             diagnostic.apiErrorType === "provider_overloaded" || diagnostic.apiErrorType === "timeout",
         });
         diagnostic.failure = error.failure.category;
-        if (diagnostic.failure === "rate_limited" && this.freeCatalog && headers) {
-          const now = Date.now();
-          diagnostic.retryAt = retryAfter(headers, now) ?? now + 60_000;
+        if (diagnostic.failure === "rate_limited" && this.freeCatalog) {
+          diagnostic.retryAt = diagnostic.limitEvidence?.retryAfterAt ?? Date.now() + 60_000;
           this.cooldowns.set(request.model, diagnostic.retryAt);
         }
         if (error.failure.code) diagnostic.failureCode = error.failure.code;

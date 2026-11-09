@@ -1,7 +1,7 @@
 export type ProviderId = "openrouter" | "elevenlabs";
 export type QuotaStatus = "normal" | "near" | "exhausted" | "unknown";
 export type LimitSignal = "quota" | "rate";
-export type AccountIssue = "not_configured" | "permission" | "rate" | "unavailable";
+export type AccountIssue = "not_checked" | "not_configured" | "permission" | "rate" | "network" | "timeout" | "invalid_response" | "unavailable";
 
 export interface Quota {
   used: number | null;
@@ -17,6 +17,8 @@ export type Account = {
   httpStatus: number | null;
   issue: AccountIssue | null;
   quota: Quota | null;
+  freeRequests: Quota | null;
+  errorCode: "missing_permissions" | null;
   spend: { amount: number; currency: string; scope: "key" | "overage" } | null;
   dailySpend: number | null;
   freeTier: boolean | null;
@@ -38,7 +40,8 @@ export interface ProviderTotals {
 
 export interface ProviderModel extends ProviderTotals {
   model: string;
-  limitEvent: { kind: LimitSignal; at: number; retryAt: number | null; httpStatus: number | null; apiCode: number | null } | null;
+  limitEvent: { kind: LimitSignal; at: number; retryAt: number | null; httpStatus: number | null; apiCode: number | null;
+    evidence?: import("../models/providers/openRouterLimits.js").OpenRouterLimitEvidence } | null;
 }
 
 export interface ProviderReport {

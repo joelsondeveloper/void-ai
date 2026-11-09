@@ -17,7 +17,7 @@ import type { ModelProvider, ModelRoutes } from "../types/model.js";
 import { UsageWindows } from "../governance/UsageWindows.js";
 import type { SystemInfo } from "./contracts.js";
 import { ProviderUsage } from "./provider-usage.js";
-import { createAccountReader } from "./provider-accounts.js";
+import { createAccountReader, emptyAccount } from "./provider-accounts.js";
 import type { ProviderDashboard } from "./provider-contracts.js";
 import { createVoiceService, voiceConfiguration } from "./voice.js";
 
@@ -103,30 +103,41 @@ export function createWebRuntime(options: {
     trustedLocalProviders: options.live ? [] : [local.id],
   });
   const main = new MainAgent(router, registry, governance, conversations, { ...defaults, routesForEffort: routes });
+  function providerDashboard(): ProviderDashboard {
+    const at = Date.now();
+    const routerAccount = emptyAccount(options.key ? "not_checked" : "not_configured", at);
+    const voiceAccount = emptyAccount(voiceConfig.key ? "not_checked" : "not_configured", at);
+    const configured = new Set<string>(freeFallbackModels);
+    for (const effort of ["low", "medium", "high", "max"] as const) {
+      try { for (const route of Object.values(liveModelRoutes(effort))) configured.add(route.model); }
+      catch { /* Invalid route settings are already reported by system(). */ }
+    }
+    const since = providerUsage.since();
+    const routerReport = providerUsage.report("openrouter", [...configured], since);
+    const legacy = usage?.snapshot().find(({ hours }) => hours === 168);
+    return {
+      since, voiceLimits: providerUsage.voiceLimits(),
+      legacy: legacy ? { attempts: Math.max(0, legacy.attempts - routerReport.totals.attempts),
+        failed: Math.max(0, legacy.failed - routerReport.totals.failed) } : null,
+      providers: [
+        { provider: "openrouter", enabled: !!live, account: routerAccount, ...routerReport },
+        { provider: "elevenlabs", enabled: voiceEnabled, account: voiceAccount,
+          ...providerUsage.report("elevenlabs", voiceConfig.model ? [voiceConfig.model] : [], since) },
+      ],
+    };
+  }
   return {
     main, conversations, permissions, limits, live: !!options.live, available: !!provider,
     usage: () => ({ mode: "observe", windows: usage?.snapshot() ?? [] }),
     voice,
-    async providerDashboard(): Promise<ProviderDashboard> {
-      const [routerAccount, voiceAccount] = await Promise.all([account("openrouter"), account("elevenlabs")]);
-      const configured = new Set<string>(freeFallbackModels);
-      for (const effort of ["low", "medium", "high", "max"] as const) {
-        try { for (const route of Object.values(liveModelRoutes(effort))) configured.add(route.model); }
-        catch { /* Invalid route settings are already reported by system(). */ }
-      }
-      const since = providerUsage.since();
-      const routerReport = providerUsage.report("openrouter", [...configured], since);
-      const legacy = usage?.snapshot().find(({ hours }) => hours === 168);
-      return {
-        since, voiceLimits: providerUsage.voiceLimits(),
-        legacy: legacy ? { attempts: Math.max(0, legacy.attempts - routerReport.totals.attempts),
-          failed: Math.max(0, legacy.failed - routerReport.totals.failed) } : null,
-        providers: [
-          { provider: "openrouter", enabled: !!live, account: routerAccount, ...routerReport },
-          { provider: "elevenlabs", enabled: voiceEnabled, account: voiceAccount,
-            ...providerUsage.report("elevenlabs", voiceConfig.model ? [voiceConfig.model] : [], since) },
-        ],
-      };
+    providerDashboard,
+    async refreshProviderDashboard(): Promise<ProviderDashboard> {
+      const dashboard = providerDashboard();
+      await Promise.all(dashboard.providers.map(async (report) => {
+        try { report.account = await account(report.provider); }
+        catch { report.account = emptyAccount("unavailable", Date.now()); }
+      }));
+      return dashboard;
     },
     system(requested: Parameters<typeof resolveEffort>[0]): SystemInfo {
       const { effort } = governance.effortLimits(requested, limits);

@@ -23,26 +23,35 @@ function resetUtc(window: string | null, now: number) {
   return date.getTime();
 }
 
+export function emptyAccount(issue: AccountIssue | null, checkedAt: number, httpStatus: number | null = null): Account {
+  return { checkedAt, httpStatus, issue, quota: null, freeRequests: null, errorCode: null,
+    spend: null, dailySpend: null, freeTier: null };
+}
+
 export function createAccountReader(keys: Partial<Record<ProviderId, string>>, send: typeof fetch = fetch, now = Date.now) {
   const cached = new Map<ProviderId, { until: number; read: Promise<Account> }>();
   async function read(provider: ProviderId): Promise<Account> {
-    const empty = (issue: AccountIssue | null, httpStatus: number | null = null): Account => ({
-      checkedAt: now(), httpStatus, issue, quota: null, spend: null, dailySpend: null, freeTier: null,
-    });
+    let status: number | null = null;
+    const empty = (issue: AccountIssue | null) => emptyAccount(issue, now(), status);
     const key = keys[provider]?.trim();
     if (!key) return empty("not_configured");
     try {
       const headers = provider === "openrouter" ? new Headers({ Authorization: "Bearer " + key })
         : new Headers({ "xi-api-key": key });
       const response = await send(endpoint[provider], { method: "GET", headers, redirect: "error", signal: AbortSignal.timeout(5_000) });
+      status = response.status;
       if (!response.ok) {
-        void response.body?.cancel().catch(() => {});
         const issue = response.status === 401 || response.status === 403 ? "permission"
           : response.status === 429 ? "rate" : "unavailable";
-        return empty(issue, response.status);
+        const result = empty(issue);
+        if (provider === "elevenlabs" && issue === "permission") {
+          const detail = object(object(await response.json().catch(() => null)).detail);
+          if (detail.status === "missing_permissions") result.errorCode = detail.status;
+        } else void response.body?.cancel().catch(() => {});
+        return result;
       }
       const data = object(await response.json());
-      const result = empty(null, response.status);
+      const result = empty(null);
       if (provider === "openrouter") {
         const keyData = object(data.data);
         const limit = numeric(keyData.limit);
@@ -50,7 +59,13 @@ export function createAccountReader(keys: Partial<Record<ProviderId, string>>, s
         const remaining = typeof rawRemaining === "number" && Number.isFinite(rawRemaining) ? Math.max(0, rawRemaining) : null;
         const window = period(keyData.limit_reset);
         const spend = numeric(keyData.usage);
-        if (spend === null && limit === null && remaining === null) return empty("unavailable", response.status);
+        const free = object(keyData.free_model_daily_requests);
+        const usedRequests = numeric(free.used), maxRequests = numeric(free.limit), leftRequests = numeric(free.remaining);
+        if (usedRequests !== null && maxRequests !== null && leftRequests !== null &&
+            [usedRequests, maxRequests, leftRequests].every(Number.isSafeInteger) && leftRequests <= maxRequests) {
+          result.freeRequests = quota(usedRequests, maxRequests, leftRequests, "daily", resetUtc("daily", result.checkedAt));
+        }
+        if (spend === null && limit === null && remaining === null && !result.freeRequests) return empty("invalid_response");
         result.quota = quota(limit === null || remaining === null ? null : Math.max(0, limit - remaining),
           limit, remaining, window, resetUtc(window, result.checkedAt));
         result.spend = spend === null ? null : { amount: spend, currency: "USD", scope: "key" };
@@ -58,7 +73,7 @@ export function createAccountReader(keys: Partial<Record<ProviderId, string>>, s
         result.freeTier = typeof keyData.is_free_tier === "boolean" ? keyData.is_free_tier : null;
       } else {
         const used = numeric(data.character_count), limit = numeric(data.character_limit);
-        if (used === null && limit === null) return empty("unavailable", response.status);
+        if (used === null && limit === null) return empty("invalid_response");
         const reset = numeric(data.next_character_count_reset_unix);
         result.quota = quota(used, limit, used === null || limit === null ? null : Math.max(0, limit - used),
           period(data.character_refresh_period), reset !== null && reset <= 8.64e12 ? reset * 1000 : null);
@@ -70,7 +85,10 @@ export function createAccountReader(keys: Partial<Record<ProviderId, string>>, s
         }
       }
       return result;
-    } catch { return empty("unavailable"); }
+    } catch (error) {
+      return empty(error instanceof Error && error.name === "TimeoutError" ? "timeout"
+        : status === null ? "network" : "invalid_response");
+    }
   }
   return (provider: ProviderId) => {
     const previous = cached.get(provider);

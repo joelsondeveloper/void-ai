@@ -213,7 +213,8 @@ test("provider dashboard exposes allowlisted read-only metrics, coalesces reads 
       if (url.endsWith("/key")) {
         assert.equal(new Headers(init.headers).get("Authorization"), "Bearer test-router-secret");
         return Response.json({ data: { usage: 0, usage_daily: 0, limit: null, limit_remaining: null,
-          is_free_tier: true, label: "private-label", rate_limit: { requests: 999 } } });
+          is_free_tier: true, free_model_daily_requests: { used: 52, limit: 50, remaining: 0 },
+          label: "private-label", rate_limit: { requests: 999 } } });
       }
       assert.equal(new Headers(init.headers).get("xi-api-key"), "test-voice-secret");
       return Response.json({ detail: { status: "missing_permissions", message: "private-label" } }, { status: 401 });
@@ -221,6 +222,11 @@ test("provider dashboard exposes allowlisted read-only metrics, coalesces reads 
   t.after(api.close);
   assert.equal((await api.post("/api/provider-usage", {}, "https://example.invalid")).status, 403);
   assert.equal((await api.post("/api/provider-usage", { url: "https://example.invalid" })).status, 400);
+  const local = await api.get("/api/provider-usage");
+  assert.equal(local.status, 200);
+  const snapshot = await local.json();
+  assert.equal(snapshot.providers[0].account.issue, "not_checked");
+  assert.equal(snapshot.voiceLimits.daily.limit, 6000);
   assert.deepEqual(reads, []);
   const replies = await Promise.all([api.post("/api/provider-usage", {}), api.post("/api/provider-usage", {})]);
   const [first, second] = await Promise.all(replies.map((r) => r.json()));
@@ -229,12 +235,44 @@ test("provider dashboard exposes allowlisted read-only metrics, coalesces reads 
   assert.equal(first.providers[0].account.spend.amount, 0);
   assert.equal(first.providers[0].account.quota.status, "unknown");
   assert.equal(first.providers[0].totals.costUsd, null);
+  const free = first.providers[0].account.freeRequests;
+  assert.deepEqual({ ...free, resetsAt: null }, { used: 52, limit: 50, remaining: 0, window: "daily",
+    resetsAt: null, status: "exhausted" });
+  assert.equal(new Date(free.resetsAt).getUTCHours(), 0);
   assert.equal(first.providers[1].account.issue, "permission");
+  assert.equal(first.providers[1].account.errorCode, "missing_permissions");
   assert.equal(first.providers[1].account.quota, null);
   assert.equal(first.providers[1].enabled, false);
   assert.equal(first.voiceLimits.daily.limit, 6000);
   assert.doesNotMatch(JSON.stringify(first), /test-router-secret|test-voice-secret|private-label|PrivateVoiceId|999/);
   assert.equal(reads.length, 2);
+});
+
+test("local provider telemetry remains available while quota calls are pending or fail", async (t) => {
+  let rejectRemote!: (reason: Error) => void;
+  let markStarted!: () => void;
+  const remote = new Promise<Response>((_, reject) => { rejectRemote = reject; });
+  const started = new Promise<void>((resolve) => { markStarted = resolve; });
+  const api = await serve(createWebRuntime({ filename: ":memory:", key: "mock-router",
+    voiceEnv: { ELEVENLABS_API_KEY: "mock-voice" },
+    accountFetch: async (input) => {
+      if (String(input).endsWith("/key")) { markStarted(); return remote; }
+      return Response.json({ character_count: 25, character_limit: 100 });
+    } }));
+  t.after(api.close);
+  const refresh = api.post("/api/provider-usage", {});
+  await started;
+  const local = await api.get("/api/provider-usage");
+  assert.equal(local.status, 200);
+  assert.equal((await local.json()).voiceLimits.daily.limit, 6000);
+  rejectRemote(new Error("sensitive transport detail"));
+  const response = await refresh;
+  assert.equal(response.status, 200);
+  const dashboard = await response.json();
+  assert.equal(dashboard.providers[0].account.issue, "network");
+  assert.equal(dashboard.providers[1].account.quota.used, 25);
+  assert.equal(dashboard.voiceLimits.daily.limit, 6000);
+  assert.doesNotMatch(JSON.stringify(dashboard), /sensitive transport detail/);
 });
 
 test("provider dashboard keeps key budgets and ElevenLabs subscription units separate", async (t) => {
