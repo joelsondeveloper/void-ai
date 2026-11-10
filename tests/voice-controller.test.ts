@@ -244,6 +244,29 @@ test("queues one chunk at a time and ignores old callbacks after stop, mute or r
   controller.dispose();
 });
 
+test("waits for a gesture before requesting synthesis and honors mute on server refresh", async () => {
+  const engine = new SpeechMock();
+  let activated = false, requests = 0;
+  let state!: VoiceState;
+  const controller = new VoiceController(engine, (text) => ({ text }) as SpeechSynthesisUtterance,
+    (next) => { state = next; }, async () => { requests++; return audioMock(); },
+    { enabled: true, waitForServer: true, canPlay: () => activated });
+  controller.selectSession("a");
+  controller.setRemoteStatus({ enabled: true, issue: null });
+  controller.play("new", "Resposta.");
+  assert.match(state.error, /bloqueou/);
+  assert.equal(requests, 0);
+  activated = true;
+  controller.play("new", "Resposta.");
+  assert.equal(requests, 1);
+  controller.configure({ enabled: false });
+  controller.setRemoteStatus({ enabled: true, issue: null });
+  controller.play("new", "Resposta.");
+  assert.equal(state.enabled, false);
+  assert.equal(requests, 1);
+  await setImmediate();
+});
+
 test("reports autoplay blocking and permits a manual retry", () => {
   const { controller, engine, state } = setup();
   controller.configure({ enabled: true });

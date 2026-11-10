@@ -58,7 +58,9 @@ export interface Snapshot {
 export type ActionName = "pause" | "cancel" | "resume" | "approve";
 export interface ExecutionAction { action: ActionName; revision: string; extension?: Extension }
 export interface SendMessage { id: string; message: string; effort: Effort }
+export interface VoiceAvailability { enabled: boolean; issue: string | null }
 export interface SystemInfo {
+  voice: VoiceAvailability;
   mode: "MOCK" | "LIVE";
   available: boolean;
   issue: string | null;

@@ -1,7 +1,14 @@
 // Voice scenarios share the Singularity OS mock server in singularity.test.mjs.
+async function configureRemote(page) {
+  await page.route("**/api/system?*", async (route) => {
+    const response = await route.fetch();
+    await route.fulfill({ response, json: { ...await response.json(), voice: { enabled: true, issue: null } } });
+  });
+}
 export function voiceTests(test, open, assert) {
   test("voice · final-only playback, reconnect deduplication and immediate cancellation", { timeout: 30_000 }, async (t) => {
     const page = await open(t, { width: 1280, height: 820 }, async (page) => {
+      await configureRemote(page);
       await page.route("**/api/sessions", (route) => route.fulfill({
         json: [{ id: "one", title: "Sessão um" }, { id: "two", title: "Sessão dois" }],
       }));
@@ -12,7 +19,7 @@ export function voiceTests(test, open, assert) {
         window.fetch = (input, init) => {
           if (!String(input).endsWith("/voice")) return fetch(input, init);
           window.remoteVoiceCalls.push(String(input));
-          return Promise.resolve(Response.json({ error: { code: "voice_quota" } }, { status: 429 }));
+          return Promise.resolve(Response.json({ error: { code: "voice_quota", message: "ElevenLabs informou cota esgotada." } }, { status: 429 }));
         };
         const sources = [];
         let sequence = 0;
@@ -52,10 +59,10 @@ export function voiceTests(test, open, assert) {
     await push([history]);
     await page.getByText(history.response, { exact: true }).waitFor();
     const toggle = page.getByRole("checkbox", { name: "Ativar voz" });
-    assert.equal(await toggle.isChecked(), false);
-    await toggle.check();
+    assert.equal(await toggle.isChecked(), true);
     const provider = page.getByLabel("Provedor de voz");
-    assert.equal(await provider.inputValue(), "elevenlabs");
+    await page.waitForFunction(() => document.querySelector('.voice-controls select')?.value === "elevenlabs");
+    assert.deepEqual(await page.evaluate(() => [window.remoteVoiceCalls.length, window.speechMock.spoken.length]), [0, 0]);
     await page.getByLabel(/^Voz do sistema/).selectOption("daniel");
     await page.getByRole("slider", { name: "Volume" }).press("ArrowLeft");
     await page.getByRole("slider", { name: "Velocidade" }).press("ArrowRight");
@@ -67,6 +74,7 @@ export function voiceTests(test, open, assert) {
     await page.getByText(final.response, { exact: true }).waitFor();
     const ring = page.locator('.singularity[data-voice="speaking"]');
     await ring.waitFor();
+    await page.getByText("ElevenLabs informou cota esgotada. Usando voz local pt-BR.").waitFor();
     assert.deepEqual(await page.evaluate(() => window.remoteVoiceCalls), ["/api/sessions/one/messages/new/voice"]);
     assert.deepEqual(await page.evaluate(() => {
       const { voice, volume, rate } = window.speechMock.spoken[0];
@@ -100,32 +108,55 @@ export function voiceTests(test, open, assert) {
     assert.equal(await page.evaluate(() => window.speechMock.cancelled), 3);
     assert.equal(await page.evaluate(() => window.speechMock.spoken.length), 3);
     assert.equal(await page.evaluate(() => window.remoteVoiceCalls.length), 1);
+
+    await toggle.uncheck();
+    await page.reload();
+    await toggle.waitFor();
+    assert.equal(await toggle.isChecked(), false);
+    await toggle.check();
+    assert.equal(await provider.inputValue(), "local");
   });
 
   test("voice · ElevenLabs works without speech synthesis and releases audio on stop", { timeout: 30_000 }, async (t) => {
-    const page = await open(t, { width: 390, height: 844 }, (page) =>
-      page.addInitScript(() => {
+    const page = await open(t, { width: 390, height: 844 }, async (page) => {
+      await configureRemote(page);
+      await page.addInitScript(() => {
         window.SpeechSynthesisUtterance = undefined;
         const fetch = window.fetch.bind(window);
-        window.fetch = (input, init) => String(input).endsWith("/voice")
-          ? Promise.resolve(new Response(new Uint8Array([0xff]), { headers: { "Content-Type": "audio/mpeg" } }))
-          : fetch(input, init);
+        window.remoteVoiceCalls = 0;
+        window.fetch = (input, init) => {
+          if (!String(input).endsWith("/voice")) return fetch(input, init);
+          window.remoteVoiceCalls++;
+          return Promise.resolve(new Response(new Uint8Array([0xff]), { headers: { "Content-Type": "audio/mpeg" } }));
+        };
         window.audioStops = 0;
         window.Audio = class {
-          async play() { this.onplaying?.(); }
+          async play() {
+            if (!this.retried) {
+              this.retried = true;
+              throw new DOMException("Autoplay", "NotAllowedError");
+            }
+            this.onplaying?.();
+          }
           pause() { window.audioStops++; }
           removeAttribute() {}
           load() {}
         };
-      }));
+      });
+    });
     const composer = page.getByRole("textbox", { name: "Mensagem para o VOID" });
-    await page.getByRole("checkbox", { name: "Ativar voz" }).check();
+    const toggle = page.getByRole("checkbox", { name: "Ativar voz" });
+    await toggle.waitFor();
+    assert.equal(await toggle.isChecked(), true);
     const provider = page.getByLabel("Provedor de voz");
-    assert.equal(await provider.inputValue(), "elevenlabs");
+    await page.waitForFunction(() => document.querySelector('.voice-controls select')?.value === "elevenlabs");
     assert.equal(await provider.locator('option[value="local"]').isDisabled(), true);
     await composer.fill("Explique concorrência e paralelismo.");
     await composer.press("Enter");
+    await page.getByText(/bloqueou a leitura automática/).waitFor();
+    await page.getByRole("button", { name: "Reproduzir resposta" }).click();
     await page.getByText("Falando · ElevenLabs", { exact: true }).waitFor();
+    assert.equal(await page.evaluate(() => window.remoteVoiceCalls), 1);
     await page.locator('.singularity[data-voice="speaking"]').waitFor();
     await page.getByRole("button", { name: "Parar", exact: true }).click();
     await page.locator('.singularity[data-voice="idle"]').waitFor();

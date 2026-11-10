@@ -103,7 +103,7 @@ Abra [http://127.0.0.1:3030](http://127.0.0.1:3030). O modo padrão, **MOCK**, u
 
 ### Voz de saída
 
-Ative **Ativar voz** para ouvir novas respostas finais. **ElevenLabs (pode consumir créditos)** é a opção externa. Em caso de cota, indisponibilidade ou falha de síntese, a interface tenta uma voz local pt-BR. Escolha **Voz do sistema** para usar apenas a voz local. Os controles permitem selecionar a voz do sistema, ajustar volume e velocidade, reproduzir uma resposta e parar a fala.
+A voz vem habilitada para novas respostas finais. Quando a síntese externa está configurada, o Singularity OS prefere **ElevenLabs (pode consumir créditos)**. Em caso de cota, indisponibilidade ou falha de síntese, usa uma voz local pt-BR, se houver uma disponível. **Ativar voz** e **Provedor de voz** guardam a escolha no navegador. **Parar** interrompe o áudio atual. A reprodução depende de interação com a página. Se o navegador bloquear o áudio, clique em **Reproduzir resposta**.
 
 Para habilitar ElevenLabs, entre no painel do provedor e crie uma chave restrita a **Text to Speech**, com limite de créditos. Escolha o ID de uma voz em português do Brasil. Acrescente estas variáveis ao `.env` na raiz do VOID, preenchendo a chave e o ID somente nesse arquivo local.
 
@@ -114,7 +114,7 @@ ELEVENLABS_MODEL_ID=eleven_flash_v2_5
 VOID_ELEVENLABS_TTS=0
 ```
 
-Reinicie o servidor para carregar a configuração. O modelo aceita também `eleven_multilingual_v2` e `eleven_turbo_v2_5`. O idioma é português e o sotaque depende da voz escolhida. Ao usar ElevenLabs, o backend envia o texto da resposta final ao provedor, inclusive se o chat estiver no modo MOCK. Defina `VOID_ELEVENLABS_TTS=1` somente se autorizar a síntese externa, que pode consumir créditos. A voz fica desativada no navegador até o usuário ativá-la.
+Reinicie o servidor para carregar a configuração. O modelo aceita também `eleven_multilingual_v2` e `eleven_turbo_v2_5`. O idioma é português e o sotaque depende da voz escolhida. Ao usar ElevenLabs, o backend envia o texto da resposta final ao provedor, inclusive se o chat estiver no modo MOCK. Defina `VOID_ELEVENLABS_TTS=1` somente se autorizar a síntese externa, que pode consumir créditos. O painel **Uso** consulta a assinatura separadamente. Um `401 missing_permissions` nessa consulta indica falta de acesso à leitura da assinatura. A permissão de síntese é **Text to Speech**.
 
 O servidor limita a síntese a uma chamada simultânea, seis por minuto, 2.000 caracteres por resposta e 6.000 por dia UTC. As reservas persistem no SQLite, incluindo as tentativas que falham após a reserva. Um 429 indica limitação de requisições. O código `quota_exceeded` indica cota reportada como esgotada. O servidor respeita `Retry-After` quando disponível e usa uma pausa local de cinco minutos nos demais casos. Respostas acima do limite seguem inteiras para a voz local. A interface pode exigir reprodução manual se o navegador bloquear o áudio automático.
 

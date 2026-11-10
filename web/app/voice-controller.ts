@@ -1,4 +1,4 @@
-import type { Snapshot } from "../../src/web/contracts.js";
+import type { ApiError, Snapshot, VoiceAvailability } from "../../src/web/contracts.js";
 import { finalReply, speakableText } from "../../src/web/voice-text.ts";
 export { finalReply, speakableText } from "../../src/web/voice-text.ts";
 
@@ -9,7 +9,13 @@ type RemotePlayback = {
   dispose(): void;
 };
 type LoadRemoteVoice = (sessionId: string, turnId: string, signal: AbortSignal) => Promise<RemotePlayback>;
-type VoiceJob = { key: string; utterance?: SpeechSynthesisUtterance; abort?: AbortController; remote?: RemotePlayback };
+type VoiceJob = {
+  key: string;
+  utterance?: SpeechSynthesisUtterance;
+  abort?: AbortController;
+  remote?: RemotePlayback;
+  retry?: () => void;
+};
 export type VoiceState = {
   enabled: boolean;
   provider: VoiceProvider;
@@ -20,11 +26,15 @@ export type VoiceState = {
   voiceURI: string;
   volume: number;
   rate: number;
-  playback: "idle" | "pending" | "speaking";
+  playback: "idle" | "pending" | "speaking" | "blocked";
   error: string;
+  remoteIssue: string | null;
 };
 
 const unavailable = "Nenhuma voz local pt-BR disponível neste dispositivo.";
+const remoteUnavailable = "Não foi possível reproduzir o áudio da ElevenLabs.";
+const blocked = "O navegador bloqueou a leitura automática. Use Reproduzir resposta.";
+class RemoteVoiceError extends Error {}
 // Voice names are only an ordering hint. The API exposes no gender metadata.
 const preferredVoice = /\b(?:male|masculin[oa]|daniel|ricardo|felipe|antonio|antônio|thiago)\b/i;
 
@@ -48,15 +58,19 @@ export class VoiceController {
   private hasSnapshot = false;
   private handled = new Set<string>();
   private expected = new Set<string>();
+  private preferLocal: boolean;
 
   constructor(private readonly engine: SpeechEngine | undefined,
     private readonly utterance: (text: string) => SpeechSynthesisUtterance,
     private readonly update: (state: VoiceState) => void,
-    private readonly loadRemote?: LoadRemoteVoice) {
+    private readonly loadRemote?: LoadRemoteVoice,
+    private readonly options: { enabled?: boolean; preferLocal?: boolean; waitForServer?: boolean; canPlay?: () => boolean } = {}) {
+    const remoteSupported = !!loadRemote && !options.waitForServer;
+    this.preferLocal = !!options.preferLocal;
     this.state = {
-      enabled: false, provider: loadRemote ? "elevenlabs" : "local", playingProvider: null,
-      localSupported: !!engine, remoteSupported: !!loadRemote,
-      voices: [], voiceURI: "", volume: 1, rate: 1, playback: "idle", error: "",
+      enabled: options.enabled ?? false, provider: remoteSupported && !this.preferLocal ? "elevenlabs" : "local", playingProvider: null,
+      localSupported: !!engine, remoteSupported,
+      voices: [], voiceURI: "", volume: 1, rate: 1, playback: "idle", error: "", remoteIssue: null,
     };
     engine?.addEventListener("voiceschanged", this.refreshVoices);
     this.refreshVoices();
@@ -77,7 +91,16 @@ export class VoiceController {
     this.set({ voices, error });
   };
 
+  setRemoteStatus(status: VoiceAvailability) {
+    const remoteSupported = status.enabled && !!this.loadRemote;
+    const provider = remoteSupported && !this.preferLocal ? "elevenlabs" : "local";
+    if (provider !== this.state.provider) this.stop();
+    this.set({ remoteSupported, provider, remoteIssue: this.loadRemote ? status.issue : "Áudio da ElevenLabs indisponível neste navegador." });
+    this.refreshVoices();
+  }
+
   configure(change: Partial<Pick<VoiceState, "enabled" | "provider" | "voiceURI" | "volume" | "rate">>) {
+    if (change.provider) this.preferLocal = change.provider === "local";
     if (change.enabled === false || change.volume === 0 || (change.provider && change.provider !== this.state.provider)) this.stop();
     this.set({ ...change, error: "" });
     if (this.state.enabled) this.refreshVoices();
@@ -112,9 +135,17 @@ export class VoiceController {
   }
 
   play(key: string, source: string) {
-    if (!this.state.enabled || this.state.volume === 0 || this.active?.key === key) return;
+    if (!this.state.enabled || this.state.volume === 0) return;
     const text = speakableText(source);
     if (!text) return;
+    if (this.options.canPlay?.() === false) {
+      this.set({ error: blocked });
+      return;
+    }
+    if (this.active?.key === key) {
+      this.active.retry?.();
+      return;
+    }
     this.stop();
     const job: VoiceJob = { key };
     this.active = job;
@@ -135,7 +166,7 @@ export class VoiceController {
     const abort = new AbortController();
     job.abort = abort;
     let started = false;
-    const fallback = () => {
+    const fallback = (reason: string) => {
       if (this.active !== job || abort.signal.aborted || job.utterance) return;
       // Once audio has started, a replay would repeat already spoken text.
       if (started) {
@@ -144,7 +175,7 @@ export class VoiceController {
       }
       job.remote?.dispose();
       delete job.remote;
-      this.playLocal(job, text, true);
+      this.playLocal(job, text, reason);
     };
     try {
       const playback = await load(this.sessionId, job.key, AbortSignal.any([abort.signal, AbortSignal.timeout(15_000)]));
@@ -159,23 +190,36 @@ export class VoiceController {
         this.set({ playback: "speaking", playingProvider: "elevenlabs" });
       };
       audio.onended = () => { if (job.remote === playback) this.finish(job); };
-      audio.onerror = () => { if (job.remote === playback) fallback(); };
-      await audio.play();
-    } catch { fallback(); }
+      audio.onerror = () => { if (job.remote === playback) fallback(remoteUnavailable); };
+      const play = async () => {
+        delete job.retry;
+        this.set({ playback: "pending", error: "" });
+        try { await audio.play(); }
+        catch (error) {
+          if (this.active !== job || job.remote !== playback) return;
+          if (error instanceof DOMException && error.name === "NotAllowedError") {
+            job.retry = () => void play();
+            this.set({ playback: "blocked", error: blocked });
+          } else fallback(remoteUnavailable);
+        }
+      };
+      await play();
+    } catch (error) { fallback(error instanceof RemoteVoiceError ? error.message : remoteUnavailable); }
   }
 
-  private playLocal(job: VoiceJob, text: string, fallback = false) {
+  private playLocal(job: VoiceJob, text: string, fallback = "") {
     const { engine } = this;
     const { voices, voiceURI, volume, rate } = this.state;
     const voice = voices.find((item) => item.voiceURI === voiceURI) ?? voices[0];
     if (!engine || !voice) {
-      this.finish(job, fallback ? "ElevenLabs indisponível. " + unavailable : unavailable);
+      this.finish(job, [fallback, unavailable].filter(Boolean).join(" "));
       return;
     }
+    if (fallback) this.set({ error: fallback + " Usando voz local pt-BR." });
     const chunks = speechChunks(text);
     const next = () => {
       const chunk = chunks.next();
-      if (chunk.done) { this.finish(job); return; }
+      if (chunk.done) { this.finish(job, fallback); return; }
       try {
         const utterance = this.utterance(chunk.value);
         job.utterance = utterance;
@@ -188,12 +232,12 @@ export class VoiceController {
         utterance.onend = () => { if (current()) next(); };
         utterance.onerror = (event) => {
           if (!current()) return;
-          this.finish(job, event.error === "not-allowed" ? "O navegador bloqueou a leitura automática. Use Reproduzir resposta."
-            : "O navegador não conseguiu reproduzir esta resposta.");
+          const reason = event.error === "not-allowed" ? blocked : "O navegador não conseguiu reproduzir esta resposta.";
+          this.finish(job, [fallback, reason].filter(Boolean).join(" "));
         };
         engine.speak(utterance);
       } catch {
-        this.finish(job, "O navegador não conseguiu reproduzir esta resposta.");
+        this.finish(job, [fallback, "O navegador não conseguiu reproduzir esta resposta."].filter(Boolean).join(" "));
       }
     };
     next();
@@ -219,7 +263,7 @@ export class VoiceController {
   }
 }
 
-export function browserVoice(update: (state: VoiceState) => void) {
+export function browserVoice(update: (state: VoiceState) => void, enabled: boolean, preferLocal: boolean) {
   if (typeof window === "undefined") return;
   const engine = window.speechSynthesis;
   const local = typeof window.SpeechSynthesisUtterance === "function" && engine &&
@@ -228,13 +272,18 @@ export function browserVoice(update: (state: VoiceState) => void) {
     typeof URL.createObjectURL === "function" && typeof AbortSignal.any === "function" && typeof AbortSignal.timeout === "function";
   if (!local && !remote) return;
   return new VoiceController(local ? engine : undefined, (text) => new window.SpeechSynthesisUtterance(text), update,
-    remote ? loadElevenLabs : undefined);
+    remote ? loadElevenLabs : undefined,
+    { enabled, preferLocal, waitForServer: true, canPlay: () => navigator.userActivation?.hasBeenActive ?? true });
 }
 
 async function loadElevenLabs(sessionId: string, turnId: string, signal: AbortSignal): Promise<RemotePlayback> {
   const path = "/api/sessions/" + encodeURIComponent(sessionId) + "/messages/" + encodeURIComponent(turnId) + "/voice";
   const response = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}", signal });
-  if (!response.ok || response.headers.get("content-type") !== "audio/mpeg") throw new Error("Áudio indisponível.");
+  if (!response.ok) {
+    const failure = await response.json().catch(() => null) as ApiError | null;
+    throw new RemoteVoiceError(failure?.error?.message ?? "ElevenLabs indisponível.");
+  }
+  if (response.headers.get("content-type") !== "audio/mpeg") throw new Error("Áudio indisponível.");
   const blob = await response.blob();
   if (!blob.size) throw new Error("Áudio vazio.");
   const audio = new Audio();

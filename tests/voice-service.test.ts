@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createVoiceService } from "../src/web/voice.js";
+import { createVoiceService, VoiceError } from "../src/web/voice.js";
 
 const env = { ELEVENLABS_API_KEY: "mock-key", ELEVENLABS_VOICE_ID: "BrazilVoice" };
 const signal = new AbortController().signal;
@@ -31,6 +31,26 @@ test("ElevenLabs transport, HTTP and invalid-audio errors never expose provider 
   ]) {
     await assert.rejects(createVoiceService(env, send)("Olá.", signal),
       { status: 502, code: "voice_provider_error", message: "ElevenLabs indisponível." });
+  }
+});
+
+test("TTS permissions and voice access expose only fixed diagnostics", async () => {
+  for (const [status, providerCode, code, message] of [
+    [401, "missing_permissions", "voice_tts_permission", /Text to Speech/],
+    [404, "voice_not_found", "voice_unavailable", /voz configurada/],
+    [403, "model_access_denied", "voice_access_denied", /acesso à voz e ao modelo/],
+  ] as const) {
+    const service = createVoiceService(env, async () => Response.json({
+      detail: { status: providerCode, message: "mock-key BrazilVoice" },
+    }, { status }));
+    await assert.rejects(service("Oi.", signal), (error: unknown) => {
+      assert.ok(error instanceof VoiceError);
+      assert.equal(error.status, 502);
+      assert.equal(error.code, code);
+      assert.match(error.message, message);
+      assert.doesNotMatch(error.message, /mock-key|BrazilVoice/);
+      return true;
+    });
   }
 });
 

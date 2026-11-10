@@ -96,6 +96,9 @@ function Provider({ report }: { report: ProviderReport }) {
     <p className="muted">{account.issue ? accountIssue[account.issue] + (account.httpStatus ? " · HTTP " + account.httpStatus : "")
       + (account.errorCode ? " · " + account.errorCode : "")
       : "Consulta do provedor · " + time(account.checkedAt)}</p>
+    {voice && account.errorCode === "missing_permissions" && <p className="muted">
+      A chave não tem acesso à leitura da assinatura. A permissão Text to Speech é verificada durante a síntese.
+    </p>}
     {!voice && account.quota?.limit === null && <p className="muted">Chave sem teto monetário informado.</p>}
     {!voice && <QuotaLine title="Cota diária da conta OpenRouter (rotas gratuitas)" quota={account.freeRequests}/>}
     {latest && <p className="provider-event">{latest.kind === "quota" ? "Último registro de cota esgotada" : "Último registro de limitação de requisições"} · {time(latest.at)}

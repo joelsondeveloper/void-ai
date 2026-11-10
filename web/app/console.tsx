@@ -12,6 +12,13 @@ const prompts = [
   { label: "Resposta direta", text: "Explique a diferença entre concorrência e paralelismo em programação." },
   { label: "Trabalho em equipe", text: "Analise a função TypeScript const first = (items: string[]) => items[0] e compare duas formas de tratar listas vazias." },
 ];
+function voicePreference(key: string, value?: string) {
+  try {
+    if (value !== undefined) localStorage.setItem(key, value);
+    else return localStorage.getItem(key);
+  } catch { /* The current page can still use voice if storage is unavailable. */ }
+}
+
 const sessionPath = (id: string) => "/api/sessions/" + encodeURIComponent(id);
 
 function DelegatedReply({ text }: { text: string }) {
@@ -86,12 +93,14 @@ export function Console() {
   const optimisticTurn = optimistic?.sessionId === sessionId && !turns.some((turn) => turn.id === optimistic.id) ? optimistic : null;
   const state = optimisticTurn ? "processing" : ringState(current);
   const speaking = voiceState?.playback === "speaking";
-  const playing = !!voiceState && voiceState.playback !== "idle";
+  const playing = speaking || voiceState?.playback === "pending";
+  const audioBlocked = voiceState?.playback === "blocked";
   const waiting = connection === "reconnecting" && !!sessionId;
   const hasConversation = !!(turns.length || optimisticTurn || sessionId && current === null);
 
   useEffect(() => {
-    const controller = browserVoice(setVoiceState);
+    const controller = browserVoice(setVoiceState, voicePreference("void:voice-enabled") !== "off",
+      voicePreference("void:voice-provider") === "local");
     voice.current = controller;
     return () => { controller?.dispose(); voice.current = undefined; };
   }, []);
@@ -111,7 +120,10 @@ export function Console() {
   useEffect(() => {
     let ignore = false;
     void request<SystemInfo>("/api/system?effort=" + effort).then((info) => {
-      if (!ignore) setSystem(info);
+      if (!ignore) {
+        setSystem(info);
+        voice.current?.setRemoteStatus(info.voice);
+      }
     }).catch((failure) => {
       if (!ignore) { setSystem(null); setError(report(failure)); }
     });
@@ -302,7 +314,7 @@ export function Console() {
                 <label className="effort"><span>Esforço</span><select value={effort} onChange={(event) => {
                   const next = efforts.find((level) => level === event.target.value); if (next) setEffort(next);
                 }}>{efforts.map((level) => <option key={level} value={level}>{level === "auto" ? "Auto" : level}</option>)}</select></label>
-                {(activeTurnId || playing) && <button type="button" className="button" disabled={busy && !playing}
+                {(activeTurnId || playing || audioBlocked) && <button type="button" className="button" disabled={busy && !playing && !audioBlocked}
                   onClick={() => void stop(activeTurnId)}>Parar</button>}
                 <button className="send" aria-label="Enviar mensagem" disabled={!draft.trim() || busy || booting || !!current?.active || !!optimisticTurn || !system?.available || waiting}><Icon name="arrow" size={21}/></button>
               </div>
@@ -310,10 +322,18 @@ export function Console() {
             <div className="voice-controls" role="group" aria-label="Voz de saída">
               {voiceState ? <>
                 <label><input type="checkbox" checked={voiceState.enabled}
-                  onChange={(event) => voice.current?.configure({ enabled: event.target.checked })}/> Ativar voz</label>
+                  onChange={(event) => {
+                    const enabled = event.target.checked;
+                    voice.current?.configure({ enabled });
+                    voicePreference("void:voice-enabled", enabled ? "on" : "off");
+                  }}/> Ativar voz</label>
                 {voiceState.enabled && <>
                   <label>Provedor de voz <select value={voiceState.provider}
-                    onChange={(event) => voice.current?.configure({ provider: event.target.value === "local" ? "local" : "elevenlabs" })}>
+                    onChange={(event) => {
+                      const provider = event.target.value === "local" ? "local" : "elevenlabs";
+                      voice.current?.configure({ provider });
+                      voicePreference("void:voice-provider", provider);
+                    }}>
                     <option value="elevenlabs" disabled={!voiceState.remoteSupported}>ElevenLabs (pode consumir créditos)</option>
                     <option value="local" disabled={!voiceState.localSupported}>Voz do sistema</option>
                   </select></label>
@@ -326,13 +346,16 @@ export function Console() {
                     onChange={(event) => voice.current?.configure({ volume: event.target.valueAsNumber })}/></label>
                   <label>Velocidade <input type="range" min="0.75" max="1.5" step="0.05" value={voiceState.rate}
                     onChange={(event) => voice.current?.configure({ rate: event.target.valueAsNumber })}/></label>
-                  <span role="status">{voiceState.error || (speaking
+                  <span role="status">{speaking
                     ? "Falando · " + (voiceState.playingProvider === "elevenlabs" ? "ElevenLabs" : "Voz do sistema")
-                    : playing ? "Preparando áudio" : "")}</span>
+                    : playing ? "Preparando áudio" : ""}</span>
+                  {(voiceState.error || voiceState.remoteIssue) && <span role="status">
+                    {[voiceState.error, voiceState.remoteIssue].filter(Boolean).join(" ")}
+                  </span>}
                 </>}
               </> : <span>Voz indisponível</span>}
             </div>
-            <div className="composer-footer"><span>{system?.mode === "MOCK" ? "Simulação local · sem chamadas externas" : system?.mode === "LIVE" ? "OpenRouter · apenas modelos gratuitos" : "Conectando ao VOID"}</span>
+            <div className="composer-footer"><span>{system?.mode === "MOCK" ? "Chat em simulação local" : system?.mode === "LIVE" ? "OpenRouter · apenas modelos gratuitos" : "Conectando ao VOID"}</span>
               <span>Enter para enviar</span></div>
           </div>
         </section>

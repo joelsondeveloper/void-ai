@@ -65,17 +65,27 @@ export function createVoiceService(env: NodeJS.ProcessEnv, send: typeof fetch = 
       });
       outcome.httpStatus = response.status;
       if (!response.ok) {
-        let quota = false;
+        let codes: unknown[] = [];
         try {
           const error = JSON.parse((await readLimited(response, 16_384)).toString("utf8"));
-          quota = [error?.detail?.status, error?.detail?.code, error?.error?.code].includes("quota_exceeded");
+          codes = [error?.detail?.status, error?.detail?.code, error?.error?.code];
         } catch { /* Only allowlisted codes are used. */ }
+        const quota = codes.some((code) => code === "quota_exceeded" || code === "insufficient_credits");
         if (quota || response.status === 429) {
           const time = now();
           outcome.limit = quota ? "quota" : "rate";
           outcome.retryAt = retryAfter(response.headers, time) ?? time + 5 * 60_000;
           throw new VoiceError(429, quota ? "voice_quota" : "voice_rate_limit",
             quota ? "ElevenLabs informou cota esgotada." : "ElevenLabs limitou as requisições.");
+        }
+        if (codes.includes("missing_permissions")) {
+          throw new VoiceError(502, "voice_tts_permission", "A chave da ElevenLabs precisa da permissão Text to Speech.");
+        }
+        if (codes.some((code) => code === "voice_not_found" || code === "invalid_voice_id" || code === "voice_access_denied")) {
+          throw new VoiceError(502, "voice_unavailable", "A voz configurada está indisponível para esta chave da ElevenLabs.");
+        }
+        if (response.status === 401 || response.status === 403) {
+          throw new VoiceError(502, "voice_access_denied", "A ElevenLabs recusou a síntese. Confira a chave e o acesso à voz e ao modelo.");
         }
         throw new VoiceError(502, "voice_provider_error", unavailable);
       }

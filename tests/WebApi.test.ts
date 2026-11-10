@@ -204,7 +204,7 @@ test("voice API sends a safe fallback error without a key and aborts on disconne
 test("provider dashboard exposes allowlisted read-only metrics, coalesces reads and rejects other origins", async (t) => {
   const reads: string[] = [];
   const api = await serve(createWebRuntime({ filename: ":memory:", live: true, key: "test-router-secret",
-    voiceEnv: { ELEVENLABS_API_KEY: "test-voice-secret", ELEVENLABS_VOICE_ID: "PrivateVoiceId" },
+    voiceEnv: { VOID_ELEVENLABS_TTS: "1", ELEVENLABS_API_KEY: "test-voice-secret", ELEVENLABS_VOICE_ID: "PrivateVoiceId" },
     accountFetch: async (input, init) => {
       const url = String(input);
       reads.push(url);
@@ -222,6 +222,9 @@ test("provider dashboard exposes allowlisted read-only metrics, coalesces reads 
   t.after(api.close);
   assert.equal((await api.post("/api/provider-usage", {}, "https://example.invalid")).status, 403);
   assert.equal((await api.post("/api/provider-usage", { url: "https://example.invalid" })).status, 400);
+  const system = await (await api.get("/api/system")).json();
+  assert.deepEqual(system.voice, { enabled: true, issue: null });
+  assert.doesNotMatch(JSON.stringify(system), /test-voice-secret|PrivateVoiceId/);
   const local = await api.get("/api/provider-usage");
   assert.equal(local.status, 200);
   const snapshot = await local.json();
@@ -242,7 +245,8 @@ test("provider dashboard exposes allowlisted read-only metrics, coalesces reads 
   assert.equal(first.providers[1].account.issue, "permission");
   assert.equal(first.providers[1].account.errorCode, "missing_permissions");
   assert.equal(first.providers[1].account.quota, null);
-  assert.equal(first.providers[1].enabled, false);
+  assert.equal(first.providers[1].enabled, true);
+  assert.deepEqual((await (await api.get("/api/system")).json()).voice, system.voice);
   assert.equal(first.voiceLimits.daily.limit, 6000);
   assert.doesNotMatch(JSON.stringify(first), /test-router-secret|test-voice-secret|private-label|PrivateVoiceId|999/);
   assert.equal(reads.length, 2);

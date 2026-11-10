@@ -70,7 +70,11 @@ export function createWebRuntime(options: {
   const providerUsage = new ProviderUsage(options.filename);
   const voiceEnv = options.voiceEnv ?? {};
   const voiceConfig = voiceConfiguration(voiceEnv);
-  const voiceEnabled = voiceEnv.VOID_ELEVENLABS_TTS === "1" && voiceConfig.valid;
+  const voiceAllowed = voiceEnv.VOID_ELEVENLABS_TTS?.trim() === "1";
+  const voiceEnabled = voiceAllowed && voiceConfig.valid;
+  const voiceStatus = { enabled: voiceEnabled, issue: voiceEnabled ? null : voiceAllowed
+    ? "Confira a chave, o ID da voz e o modelo da ElevenLabs no servidor."
+    : "ElevenLabs desativada no servidor. Para usar a síntese externa, configure VOID_ELEVENLABS_TTS=1." };
   const account = createAccountReader({
     ...(options.key ? { openrouter: options.key } : {}),
     ...(voiceConfig.key ? { elevenlabs: voiceConfig.key } : {}),
@@ -143,10 +147,10 @@ export function createWebRuntime(options: {
       const { effort } = governance.effortLimits(requested, limits);
       try {
         const models = routes(effort);
-        return { mode, available: !!provider, issue: provider ? null : "Configure OPENROUTER_API_KEY no servidor para usar o modo LIVE.",
+        return { mode, voice: voiceStatus, available: !!provider, issue: provider ? null : "Configure OPENROUTER_API_KEY no servidor para usar o modo LIVE.",
           models, effort, demoCap: mode === "MOCK" ? options.maxCalls ?? null : null };
       } catch {
-        return { mode, available: false, issue: "A configuração dos modelos para este esforço é inválida ou inclui uma rota paga.",
+        return { mode, voice: voiceStatus, available: false, issue: "A configuração dos modelos para este esforço é inválida ou inclui uma rota paga.",
           models: null, effort, demoCap: null };
       }
     },
