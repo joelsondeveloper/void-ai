@@ -516,7 +516,7 @@ test("web LIVE preserves safe failure details and accepts a later send after tra
     assert.ok(next);
     return next();
   });
-  const api = await serve(createWebRuntime({ filename: ":memory:", live: true, key: "test-key" }));
+  const api = await serve(createWebRuntime({ filename: ":memory:", live: true, key: "test-key", maxCalls: 2 }));
   t.after(api.close);
   const path = await api.session();
   const expectations = [
@@ -671,13 +671,17 @@ for (const effort of ["auto", "medium"] as const) {
     assert.equal((await api.post(path + "/messages", { ...message(input), effort })).status, 202);
     await api.waitFor(path, ({ turns }) => turns[0]?.response === "Verified");
     assert.ok(webRequest);
-    const messages = webRequest.messages.map(({ role, content }) => ({ role, content: content.replace(
-      /Authorized catalog: (\[.*\])$/m, (_, encoded: string) => {
-        const entries: { id: string; operations: string[] }[] = JSON.parse(encoded);
-        assert.deepEqual(entries.find(({ id }) => id === "agent-renderer")?.operations, ["ui-render"]);
-        return "Authorized catalog: " + JSON.stringify(entries.filter(({ id }) => id !== "agent-renderer"));
-      }) }));
-    assert.deepEqual({ ...webRequest, messages }, { ...terminalRequest, stream: true, stream_options: { include_usage: true } });
+    const { messages: webMessages, ...webConfig } = webRequest;
+    const { messages: terminalMessages, ...terminalConfig } = terminalRequest;
+    assert.deepEqual(webConfig, { ...terminalConfig, stream: true, stream_options: { include_usage: true } });
+    assert.deepEqual(webMessages.at(-1), terminalMessages.at(-1));
+    assert.match(webMessages[0]?.content ?? "", /AgentRenderer/);
+    assert.match(webMessages[0]?.content ?? "", /"name":"ui.render"/);
+    assert.doesNotMatch(terminalMessages[0]?.content ?? "", /"name":"ui.render"/);
+    for (const id of ["dev-agent", "research-agent"]) {
+      assert.ok(webMessages[0]?.content.includes(id));
+      assert.ok(terminalMessages[0]?.content.includes(id));
+    }
   });
 }
 
@@ -703,7 +707,7 @@ test("UI commands use the existing message route without an available model and 
   assert.equal((await api.post(path + "/messages", message("O que é workspace?"))).status, 503);
 });
 
-test("MainAgent accepts display schemas only for explicit visualization requests", async (t) => {
+test("MainAgent validates display schemas and routes them through the registered renderer", async (t) => {
   const schema = { title: "Custos", blocks: [{ kind: "card", title: "Total", value: 12 }] };
   let calls = 0;
   const api = await serve(createWebRuntime({ filename: ":memory:", mock: { id: "web-demo",
@@ -724,14 +728,14 @@ test("MainAgent accepts display schemas only for explicit visualization requests
   const accepted = await api.waitFor(path, ({ active, turns }) => !active && turns.length === 2);
   assert.deepEqual(accepted.ui, { turnId: valid.id, action: { type: "update_panel", panel: "display", schema } });
   assert.equal(calls, 1);
-  const ordinary = message("O que você sabe sobre mim?");
+  const ordinary = message("Organize esses dados visualmente para mim.");
   assert.equal((await api.post(path + "/messages", ordinary)).status, 202);
   const rejectedDecision = await api.waitFor(path, ({ active, turns }) => !active && turns.length === 3);
-  assert.equal(rejectedDecision.turns[2]?.failure, "invalid_response");
-  assert.deepEqual(rejectedDecision.ui, accepted.ui);
+  assert.equal(rejectedDecision.turns[2]?.failure, null);
+  assert.deepEqual(rejectedDecision.ui?.action, accepted.ui?.action);
 });
 
-test("MainAgent executes validated window tool calls only for components the user mentioned", async (t) => {
+test("MainAgent executes registered window tools and rejects unknown components or extra arguments", async (t) => {
   let call: unknown = { name: "ui.openWindow", arguments: { component: "settings" } };
   const api = await serve(createWebRuntime({ filename: ":memory:", mock: { id: "web-demo",
     async generate({ model }) { return { model, content: JSON.stringify({ mode: "tool", call }) }; },
@@ -747,8 +751,8 @@ test("MainAgent executes validated window tool calls only for components the use
 
   const rejected = [
     { text: request, args: { component: "settings", url: "https://example.invalid" } },
-    { text: request, args: { component: "usage" } },
-    { text: "Como funciona o reconhecimento de voz?", args: { component: "settings" } },
+    { text: request, args: { component: "secrets" } },
+    { text: request, args: {} },
   ];
   for (const [index, { text, args }] of rejected.entries()) {
     call = { name: "ui.openWindow", arguments: args };

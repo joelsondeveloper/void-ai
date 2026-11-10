@@ -25,7 +25,6 @@ import { createVoiceService, voiceConfiguration } from "./voice.js";
 import { UiRuntimeService } from "./ui-runtime.js";
 import { ComponentRegistry } from "./ComponentRegistry.js";
 import { previewPermission } from "./render-contracts.js";
-import { renderWindow } from "./render-operations.js";
 
 export const mockProviderId = "web-demo";
 
@@ -46,7 +45,7 @@ function demoProvider(delay: number): ModelProvider {
           source: 'export default function Component() { return (<section className="stack"><header><h1>Expedições da equipe</h1><p className="muted">Registre as saídas de campo desta sessão.</p></header><article className="card"><h2>Diário de campo</h2><Counter label="Expedições" /><Toggle label="Equipamento conferido" /></article></section>); }' });
       } else if (system.startsWith("VOID_UI_AUTHOR") && /contador/i.test(input)) {
         content = JSON.stringify({ title: "Contador",
-          source: 'export default function Component() { return (<section><h1>Contador</h1><Counter label="Contador" /></section>); }' });
+          source: 'export default function Component() { return (<section className="stack"><header><h1>Contador</h1><p className="muted">Use os controles para ajustar a contagem nesta sessão.</p></header><article className="card"><Counter label="Contagem" /></article></section>); }' });
       } else if (system.startsWith("VOID_DECISION")) {
         content = JSON.stringify(/analis[ea]|compare|função|falha simulada/i.test(input) ? {
           mode: "delegate",
@@ -132,7 +131,7 @@ export function createWebRuntime(options: {
   });
   const main = new MainAgent(router, registry, governance, conversations, {
     ...defaults, routesForEffort: routes, ui, componentCatalog: (sessionId) => components.catalog(sessionId),
-    render: (input, context, maxTasks) => agentRuntime.invoke("main-agent", renderWindow, input, context, {
+    tool: (call, resources, context, maxTasks) => agentRuntime.invokeTool("main-agent", call, resources, context, {
       maxTasks, trace: (event) => components.trace(event),
     }),
   });

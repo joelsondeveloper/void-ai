@@ -31,7 +31,7 @@ const uiInstructions = [
   "Allowed tags: section article div header footer h1 h2 h3 p strong em small span ul ol li table thead tbody tr th td.",
   'Allowed attributes: className with stack grid card metric muted accent, and aria-label. Always use double quotes.',
   'For local interactions use <Counter label="Nome" /> for increment/decrement and <Toggle label="Nome" /> for a checklist item.',
-  "Use the smallest TSX tree that meets the brief. Avoid repeating data or adding decorative sections.",
+  "Design a complete, compact composition: a header with a specific title and one muted instruction, then a card for the main interaction. Use stack for rhythm, grid only for related groups, accent for emphasis and metric for key figures. Give widgets specific accessible labels. Do not add unrelated sections, fake metrics or unsupported interactions. Preserve every requested interaction; explain unsupported behavior in the component text instead of silently substituting static text.",
 ].join("\n");
 
 export class DevAgent implements ExecutableAgent {

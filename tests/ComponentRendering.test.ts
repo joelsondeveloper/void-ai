@@ -144,6 +144,7 @@ test("MainAgent delivers a versioned React window after DevAgent repairs it and 
   const db = openLocalDatabase(filename);
   try {
     const ancestry = db.prepare("SELECT child.agent_id, child.status, parent.agent_id AS parent FROM ui_agent_tasks child JOIN ui_agent_tasks parent ON parent.task_id = child.parent_task_id ORDER BY child.rowid").all();
+    assert.equal(db.prepare("SELECT failure_category FROM ui_agent_tasks WHERE agent_id = 'dev-agent' AND status = 'failed'").get()?.failure_category, "budget_exceeded");
     assert.deepEqual(ancestry.map((row) => ({ ...row })), [
       { agent_id: "dev-agent", status: "completed", parent: "agent-renderer" },
       { agent_id: "dev-agent", status: "failed", parent: "agent-renderer" },

@@ -2,7 +2,7 @@ import { AgentRegistry } from "./AgentRegistry.js";
 import type { AgentTask, AgentResult } from "../types/task.js";
 import type { AgentContext } from "../types/context.js";
 import { describeFailure, ExecutionError } from "../types/failure.js";
-import type { AgentOperation, AgentTaskEvent, InvocationPolicy } from "./AgentOperation.js";
+import type { AgentOperation, AgentTaskEvent, InvocationPolicy, ModelToolResources } from "./AgentOperation.js";
 
 export class AgentRuntime {
   private readonly agents: AgentRegistry;
@@ -10,6 +10,14 @@ export class AgentRuntime {
 
   constructor(agents: AgentRegistry) {
     this.agents = agents;
+  }
+
+  async invokeTool(caller: string, call: { name: string; arguments: unknown }, resources: ModelToolResources,
+    context: AgentContext, policy: InvocationPolicy): Promise<unknown> {
+    const binding = this.agents.modelToolFor(call.name, caller, context.permissions);
+    if (!binding || !binding.tool.accepts(call)) throw new ExecutionError({ category: "permission_denied",
+      message: "Ferramenta indisponível ou argumentos inválidos.", retryable: false });
+    return this.invoke(caller, binding.operation, binding.tool.prepare(call, resources), context, policy);
   }
 
   invoke<Input, Output>(caller: string, operation: AgentOperation<Input, Output>, input: Input,
@@ -35,9 +43,10 @@ export class AgentRuntime {
       const taskId = crypto.randomUUID();
       const lifetime = new AbortController();
       const signal = AbortSignal.any([parentSignal, lifetime.signal]);
-      const trace = (status: AgentTaskEvent["status"]) => policy.trace?.({
+      const trace = (status: AgentTaskEvent["status"], failureCategory?: AgentTaskEvent["failureCategory"]) => policy.trace?.({
         executionId: context.executionId, taskId, parentTaskId, caller: from,
-        agentId: target.agentId, capability: target.capability, status, at: new Date().toISOString(),
+        agentId: target.agentId, capability: target.capability, status,
+        ...(failureCategory ? { failureCategory } : {}), at: new Date().toISOString(),
       });
       try {
         trace("running");
@@ -49,7 +58,7 @@ export class AgentRuntime {
         trace("completed");
         return result;
       } catch (error) {
-        trace(signal.aborted ? "cancelled" : "failed");
+        trace(signal.aborted ? "cancelled" : "failed", describeFailure(error, signal).category);
         throw error;
       } finally {
         lifetime.abort();

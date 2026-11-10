@@ -16,6 +16,11 @@ export type WindowToolCall = {
   arguments: { component: BuiltinWindow };
 };
 
+export type LayoutToolCall =
+  | { name: "ui.switchMode"; arguments: { mode: UiMode } }
+  | { name: "ui.resetLayout"; arguments: Record<string, never> };
+export type LocalUiToolCall = WindowToolCall | LayoutToolCall;
+
 export interface RenderToolCall {
   name: "ui.render";
   arguments: RenderRequest;
@@ -97,6 +102,14 @@ export function isWindowToolCall(value: unknown): value is WindowToolCall {
       (value.name !== "ui.openWindow" && value.name !== "ui.closeWindow")) return false;
   const args = value.arguments;
   return record(args) && keys(args, "component") && isPanel(args.component) && args.component !== "display" && args.component !== "generated";
+}
+
+export function isLocalUiToolCall(value: unknown): value is LocalUiToolCall {
+  if (isWindowToolCall(value)) return true;
+  if (!record(value) || !keys(value, "name", "arguments") || !record(value.arguments)) return false;
+  if (value.name === "ui.resetLayout") return keys(value.arguments);
+  return value.name === "ui.switchMode" && keys(value.arguments, "mode") &&
+    (value.arguments.mode === "focus" || value.arguments.mode === "workspace");
 }
 
 export function isRenderToolCall(value: unknown): value is RenderToolCall {

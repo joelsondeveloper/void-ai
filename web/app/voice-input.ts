@@ -351,13 +351,20 @@ export class VoiceInput {
         if (!capture.closing) this.set({ phase: this.awakeUntil ? "listening" : "wake" });
       };
       recognition.onresult = ({ resultIndex, results }) => {
-        if (capture.recognition !== recognition || !capture.startedAt) return;
+        if (this.capture !== capture || capture.recognition !== recognition) return;
         for (let i = resultIndex; i < results.length; i++) {
           const result = results[i];
           if (!result?.isFinal || seen.has(i)) continue;
           seen.add(i);
           const text = result[0].transcript.trim();
-          if (speechText.test(text)) capture.text.push(text);
+          if (speechText.test(text)) {
+            // A final transcript is evidence of speech even below the VAD volume threshold.
+            // VAD still detects silence; it must not discard valid wake words or quiet commands.
+            const now = performance.now();
+            capture.startedAt ||= now;
+            if (!capture.closing) capture.lastSound = now;
+            capture.text.push(text);
+          }
         }
         this.detectWake(capture);
       };
