@@ -8,20 +8,21 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { chromium } from "playwright-core";
 import { voiceTests } from "./voice-scenarios.mjs";
+import { mockInput, voiceInputTests } from "./voice-input-scenarios.mjs";
 
-let server, browser, directory, base;
+let server, liveServer, browser, directory, base;
 const captures = process.env.VOID_WEB_SCREENSHOTS;
-before(async () => {
+async function startServer(database, mode = "MOCK") {
   const socket = createServer();
   socket.listen(0, "127.0.0.1");
   await once(socket, "listening");
   const { port } = socket.address();
   await new Promise((resolve) => socket.close(resolve));
-  base = "http://127.0.0.1:" + port;
-  directory = mkdtempSync(join(tmpdir(), "void-browser-"));
-  if (captures) mkdirSync(captures, { recursive: true });
-  server = spawn(process.execPath, ["--import", "tsx", "web/server.mjs"], {
-    env: { ...process.env, VOID_WEB_PORT: String(port), VOID_WEB_DB: join(directory, "history.sqlite"),
+  const base = "http://127.0.0.1:" + port;
+  const args = ["--import", "tsx", "web/server.mjs"];
+  if (mode === "LIVE") args.push("--live");
+  const server = spawn(process.execPath, args, {
+    env: { ...process.env, VOID_WEB_PORT: String(port), VOID_WEB_DB: database,
       VOID_WEB_MAX_CALLS: "2", NEXT_TELEMETRY_DISABLED: "1",
       OPENROUTER_API_KEY: "", ELEVENLABS_API_KEY: "", VOID_ELEVENLABS_TTS: "0" },
     stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
@@ -31,13 +32,28 @@ before(async () => {
     const timer = setTimeout(() => reject(new Error("Servidor web indisponível: " + output)), 25_000);
     const append = (chunk) => {
       output += chunk.toString();
-      if (output.includes("VOID MOCK —")) { clearTimeout(timer); resolve(); }
+      if (output.includes("VOID " + mode + " —")) { clearTimeout(timer); resolve(); }
     };
     server.stdout.on("data", append);
     server.stderr.on("data", append);
     server.once("error", (error) => { clearTimeout(timer); reject(error); });
     server.once("exit", () => { clearTimeout(timer); reject(new Error(output)); });
   });
+  return { server, base };
+}
+
+async function stopServer(server) {
+  if (server?.exitCode === null && !server.signalCode) {
+    const closed = once(server, "exit");
+    server.kill();
+    await closed;
+  }
+}
+
+before(async () => {
+  directory = mkdtempSync(join(tmpdir(), "void-browser-"));
+  if (captures) mkdirSync(captures, { recursive: true });
+  ({ server, base } = await startServer(join(directory, "history.sqlite")));
   const edge = "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe";
   const executablePath = process.env.VOID_BROWSER_EXECUTABLE || (process.platform === "win32" && existsSync(edge) ? edge : undefined);
   browser = await chromium.launch({ executablePath });
@@ -45,15 +61,11 @@ before(async () => {
 
 after(async () => {
   await browser?.close();
-  if (server?.exitCode === null && !server.signalCode) {
-    const closed = once(server, "exit");
-    server.kill();
-    await closed;
-  }
+  await Promise.all([stopServer(server), stopServer(liveServer)]);
   if (directory) rmSync(directory, { recursive: true, force: true });
 });
 
-async function open(t, viewport, setup) {
+async function open(t, viewport, setup, url = base, mode = "MOCK") {
   const context = await browser.newContext({ viewport, reducedMotion: "reduce" });
   t.after(() => context.close());
   const page = await context.newPage();
@@ -62,8 +74,79 @@ async function open(t, viewport, setup) {
   page.on("console", (message) => { if (message.type() === "error") failures.push(message.text()); });
   t.after(() => assert.deepEqual(failures, [], "browser errors"));
   await setup?.(page);
-  await page.goto(base);
-  await page.getByLabel("Estado do sistema").getByText("MOCK").waitFor();
+  await page.goto(url);
+  await page.locator('[aria-label="Estado do sistema"]').filter({ hasText: mode }).waitFor();
+  return page;
+}
+
+
+async function command(page, text) {
+  if (await page.locator(".focus-shell").count() && !(await page.locator(".command-overlay").count())) {
+    await page.keyboard.press("Control+k");
+  }
+  const field = page.getByRole("textbox", { name: "Mensagem para o VOID" });
+  await field.fill(text);
+  await page.getByRole("button", { name: "Enviar mensagem" }).and(page.locator(":enabled")).waitFor();
+  await field.press("Enter");
+}
+
+test("Focus opens a generated React component, runs local interactions and reuses its version", async (t) => {
+  const page = await open(t, { width: 1280, height: 800 });
+  const waitForPreview = () => page.waitForResponse((response) => /\/components\/[a-f0-9]{64}\/1$/.test(response.url()));
+  const initialPreview = waitForPreview();
+  await command(page, "Crie uma interface com um contador de expedições e um checklist de equipamentos");
+  const response = await initialPreview;
+  assert.equal(response.status(), 200);
+  assert.match(response.headers()["content-security-policy"], /sandbox allow-scripts; default-src 'none'/);
+  const dialog = page.getByRole("dialog", { name: "Expedições da equipe" });
+  await dialog.waitFor();
+  assert.equal(await page.locator(".focus-shell").count(), 1);
+  assert.equal(await page.locator(".command-overlay").count(), 0);
+  const iframe = dialog.locator("iframe");
+  assert.equal(await iframe.getAttribute("sandbox"), "allow-scripts");
+  const frame = iframe.contentFrame();
+  await frame.getByRole("heading", { name: "Diário de campo" }).waitFor();
+  await frame.getByRole("button", { name: "Expedições: aumentar" }).click();
+  await frame.getByText("1", { exact: true }).waitFor();
+  const check = frame.getByRole("checkbox", { name: "Equipamento conferido" });
+  await check.check();
+  assert.equal(await check.isChecked(), true);
+  assert.equal(await frame.locator("body").evaluate(() => self.origin), "null");
+  if (captures) await page.screenshot({ path: join(captures, "void-generated-focus.png") });
+  await check.press("Escape");
+  await dialog.waitFor({ state: "detached" });
+  const reusedPreview = waitForPreview();
+  await command(page, "Reabra a janela do contador de expedições");
+  assert.equal((await reusedPreview).url(), response.url());
+  await frame.getByRole("heading", { name: "Diário de campo" }).waitFor();
+});
+
+test("Focus · cria uma janela com contador e reabre o componente salvo", async (t) => {
+  const page = await open(t, { width: 1200, height: 800 });
+  await command(page, "Crie uma janela com contador");
+  const dialog = page.getByRole("dialog", { name: "Contador", exact: true });
+  const iframe = dialog.locator("iframe");
+  const frame = iframe.contentFrame();
+  await frame.getByRole("button", { name: "Contador: aumentar" }).click();
+  await frame.getByText("1", { exact: true }).waitFor();
+  const version = await iframe.getAttribute("src");
+  assert.match(version ?? "", /\/components\/[a-f0-9]{64}\/1$/);
+  if (captures) await page.screenshot({ path: join(captures, "void-contador-focus.png") });
+  await page.keyboard.press("Escape");
+  await dialog.waitFor({ state: "detached" });
+  await command(page, "Reabra a janela do contador");
+  await frame.getByRole("button", { name: "Contador: aumentar" }).waitFor();
+  assert.equal(await iframe.getAttribute("src"), version);
+});
+
+async function enterWorkspace(page) {
+  await command(page, "modo workspace");
+  await page.locator(".shell.wide").waitFor();
+}
+
+async function openWorkspace(t, viewport, setup) {
+  const page = await open(t, viewport, setup);
+  await enterWorkspace(page);
   return page;
 }
 
@@ -80,8 +163,7 @@ test("usage panel separates remote quotas and local voice caps, including on mob
       reads++;
       await route.continue();
     }));
-  const openUsage = page.getByRole("button", { name: "Uso", exact: true });
-  await openUsage.click();
+  await command(page, "abra uso");
   const panel = page.getByRole("dialog", { name: "Uso e limites" });
   await panel.getByRole("article", { name: "OpenRouter" }).getByText("Desconhecido", { exact: true }).first().waitFor();
   const voice = panel.getByRole("article", { name: "ElevenLabs" });
@@ -117,7 +199,7 @@ test("usage panel renders local telemetry before quota refresh and keeps it on a
       await route.fulfill({ response, json: dashboard });
     }));
   t.after(() => remote.resolve());
-  await page.getByRole("button", { name: "Uso", exact: true }).click();
+  await command(page, "abra uso");
   const panel = page.getByRole("dialog", { name: "Uso e limites" });
   const local = panel.getByRole("article", { name: "Limites internos de voz" });
   await local.waitFor();
@@ -129,7 +211,7 @@ test("usage panel renders local telemetry before quota refresh and keeps it on a
 });
 
 test("desktop · stop an active turn before a plan exists", { timeout: 30_000 }, async (t) => {
-  const page = await open(t, { width: 1440, height: 900 });
+  const page = await openWorkspace(t, { width: 1440, height: 900 });
   const field = page.getByRole("textbox", { name: "Mensagem para o VOID" });
   await field.fill("Explique concorrência e paralelismo.");
   await field.press("Enter");
@@ -137,24 +219,25 @@ test("desktop · stop an active turn before a plan exists", { timeout: 30_000 },
   await page.getByText("A solicitação foi cancelada.", { exact: true }).waitFor();
   assert.equal(await page.locator(".assistant-message").count(), 0);
   await page.reload();
+  await enterWorkspace(page);
   await page.getByText("A solicitação foi cancelada.", { exact: true }).waitFor();
 });
 
 test("desktop · direct answer, staged progress, approval after reload, and original results", { timeout: 60_000 }, async (t) => {
-  const page = await open(t, { width: 1440, height: 900 });
+  const page = await openWorkspace(t, { width: 1440, height: 900 });
   const conversation = page.getByRole("region", { name: "Conversa" });
   const field = page.getByRole("textbox", { name: "Mensagem para o VOID" });
-  await page.locator('.singularity[data-state="idle"]').waitFor();
-  if (captures) await page.screenshot({ path: join(captures, "void-focus.png") });
-  await page.getByRole("button", { name: /Resposta direta/ }).click();
+  await field.fill("Explique concorrência e paralelismo em programação.");
   await field.press("Shift+Enter");
   assert.ok((await field.inputValue()).endsWith("\n"));
   await field.press("Enter");
   await conversation.getByText(/Paralelismo é executá-las/).waitFor();
   await page.locator('.singularity[data-state="completed"]').waitFor();
-  assert.equal(await page.getByRole("region", { name: "Workspace" }).count(), 0);
+  assert.equal(await page.getByRole("region", { name: "Workspace" }).count(), 1);
 
+  await page.getByRole("button", { name: "Configurações", exact: true }).click();
   await page.getByLabel("Esforço").selectOption("medium");
+  await page.getByRole("dialog", { name: "Configurações" }).getByRole("button", { name: "Fechar", exact: true }).click();
   await field.fill("Analise a função TypeScript e compare alternativas.");
   await field.press("Enter");
   await page.locator('.singularity[data-state="processing"]').waitFor();
@@ -162,7 +245,6 @@ test("desktop · direct answer, staged progress, approval after reload, and orig
   await conversation.getByText("Já recebi um resultado da análise.").waitFor();
   assert.equal(await conversation.getByText(/dev-agent iniciou a etapa/).count(), 0);
   assert.equal(await conversation.locator(".assistant-message").count(), 2);
-  await page.getByRole("button", { name: "Ver execução" }).click();
   await page.getByText("Limite de chamadas", { exact: true }).waitFor();
   const workspace = page.getByRole("region", { name: "Workspace" });
   await workspace.getByText(/medium · 2\/2 chamadas/).waitFor();
@@ -172,11 +254,11 @@ test("desktop · direct answer, staged progress, approval after reload, and orig
   if (captures) await page.screenshot({ path: join(captures, "void-approval.png") });
 
   await page.reload();
+  await enterWorkspace(page);
   await conversation.getByText(/Vou examinar a parte técnica/).waitFor();
-  await conversation.getByRole("button", { name: "Autorizar e retomar" }).click();
+  await workspace.getByRole("button", { name: "Autorizar e retomar" }).click();
   await conversation.getByText(/Comparação simulada/).waitFor();
   await page.locator('.singularity[data-state="completed"]').waitFor();
-  await page.getByRole("button", { name: "Ver execução" }).click();
   assert.equal(await workspace.getByText("Inspecionar resultado", { exact: true }).count(), 2);
   assert.equal(await conversation.getByText("Analise a função TypeScript e compare alternativas.", { exact: true }).count(), 1);
   assert.ok(await noOverflow(page));
@@ -185,25 +267,21 @@ test("desktop · direct answer, staged progress, approval after reload, and orig
 
 test("tablet and mobile · switch views, navigate sessions, and preserve a partial failure", { timeout: 60_000 }, async (t) => {
   const page = await open(t, { width: 820, height: 1000 });
-  await page.getByRole("button", { name: "Workspace", exact: true }).click();
+  await enterWorkspace(page);
   await page.getByText("Nenhuma execução nesta sessão.").waitFor();
   assert.ok(await noOverflow(page));
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.getByRole("button", { name: "Focus", exact: true }).click();
-  if (captures) await page.screenshot({ path: join(captures, "void-mobile.png") });
   const field = page.getByRole("textbox", { name: "Mensagem para o VOID" });
-  await field.fill("Analise esta função com falha simulada.");
-  await field.press("Enter");
+  await command(page, "Analise esta função com falha simulada.");
+  await page.getByRole("button", { name: "Operações", exact: true }).click();
   await page.getByRole("button", { name: "Autorizar e retomar" }).click();
-  await page.locator('.singularity[data-state="failed"]').waitFor();
-  await page.getByRole("button", { name: "Ver execução" }).click();
   await page.getByText("Com falhas", { exact: true }).first().waitFor();
   assert.equal(await page.getByText("Inspecionar resultado", { exact: true }).count(), 1);
   assert.ok(await noOverflow(page));
   await page.getByRole("button", { name: "Conversa", exact: true }).click();
   await field.waitFor();
   await page.getByRole("button", { name: "Abrir sessões" }).click();
-  await page.getByRole("button", { name: "Nova sessão" }).click();
+  await page.getByRole("complementary", { name: "Sessões" }).locator(".new-session").click();
   await page.getByRole("heading", { name: "O que vamos explorar?" }).waitFor();
   await page.getByRole("button", { name: "Abrir sessões" }).click();
   await page.getByRole("button", { name: "Analise esta função com falha simulada." }).click();
@@ -211,4 +289,131 @@ test("tablet and mobile · switch views, navigate sessions, and preserve a parti
   assert.ok(await noOverflow(page));
 });
 
-voiceTests(test, open, assert);
+voiceTests(test, openWorkspace, assert, enterWorkspace);
+voiceInputTests(test, openWorkspace, assert, command);
+
+test("Focus · ring only, real windows, drag, resize, maximize, minimize, and Workspace by command", { timeout: 50_000 }, async (t) => {
+  const page = await open(t, { width: 1440, height: 900 });
+  const focus = page.locator(".focus-orbit .singularity");
+  const field = page.getByRole("textbox", { name: "Mensagem para o VOID" });
+  const dialog = page.getByRole("dialog");
+  const settings = page.getByRole("dialog", { name: "Configurações" });
+  await focus.waitFor();
+  assert.equal(await page.locator(".topbar, .sidebar, .messages, .composer, .menu").count(), 0);
+  const ring = await focus.boundingBox();
+  assert.ok(ring.width >= 500);
+  assert.equal(ring.x + ring.width / 2, 720);
+  assert.equal(ring.y + ring.height / 2, 450);
+  if (captures) await page.screenshot({ path: join(captures, "void-focus.png") });
+
+  await page.getByRole("button", { name: "Abrir comando de texto e voz" }).click();
+  await field.waitFor();
+  assert.ok(await page.getByRole("button", { name: "Clique para falar" }).isVisible());
+  await command(page, "abra configurações");
+  await settings.getByRole("checkbox", { name: "Modo mãos livres" }).waitFor();
+  assert.equal(await field.count(), 0);
+  assert.equal(await settings.evaluate((node) => document.activeElement === node), true);
+  const original = await settings.boundingBox();
+  const heading = await settings.getByRole("heading", { name: "Configurações" }).boundingBox();
+  await page.mouse.move(heading.x + 110, heading.y + 18);
+  await page.mouse.down();
+  await page.mouse.move(heading.x + 200, heading.y + 63, { steps: 5 });
+  await page.mouse.up();
+  const moved = await settings.boundingBox();
+  assert.equal(moved.x, original.x + 90);
+  assert.equal(moved.y, original.y + 45);
+  await page.mouse.move(moved.x + moved.width - 4, moved.y + moved.height - 4);
+  await page.mouse.down();
+  await page.mouse.move(moved.x + moved.width + 76, moved.y + moved.height + 36, { steps: 5 });
+  await page.mouse.up();
+  const resized = await settings.boundingBox();
+  assert.equal(resized.width, moved.width + 80);
+  assert.equal(resized.height, moved.height + 40);
+  if (captures) await page.screenshot({ path: join(captures, "void-settings-window.png") });
+
+  await settings.getByRole("button", { name: "Maximizar", exact: true }).click();
+  assert.deepEqual(await settings.boundingBox(), { x: 0, y: 0, width: 1440, height: 900 });
+  await settings.getByRole("button", { name: "Restaurar tamanho" }).click();
+  assert.deepEqual(await settings.boundingBox(), resized);
+  await settings.getByRole("button", { name: "Minimizar" }).click();
+  await settings.waitFor({ state: "hidden" });
+  assert.ok(await focus.isVisible());
+  await page.getByRole("button", { name: "Restaurar Configurações" }).click();
+  await settings.waitFor();
+  await page.keyboard.press("Escape");
+  await settings.waitFor({ state: "hidden" });
+
+  await command(page, "abra sessões");
+  await page.getByRole("dialog", { name: "Sessões" }).locator(".new-session").waitFor();
+  await command(page, "mostre operações");
+  await dialog.getByText("Nenhuma execução nesta sessão.").waitFor();
+  assert.equal(await dialog.count(), 1);
+  await dialog.getByRole("button", { name: "Fechar", exact: true }).click();
+
+  await enterWorkspace(page);
+  assert.ok(await page.locator(".topbar").isVisible());
+  assert.equal(await page.locator(".assistant-message, .user-message").count(), 0);
+  await command(page, "voltar ao focus");
+  await focus.waitFor();
+  assert.equal(await page.locator(".topbar, .sidebar, .messages, .composer").count(), 0);
+});
+
+test("Focus · narrow viewport clamps the window and renders the validated display", { timeout: 30_000 }, async (t) => {
+  const page = await open(t, { width: 390, height: 844 });
+  if (captures) await page.screenshot({ path: join(captures, "void-mobile.png") });
+  await command(page, "Exibir " + JSON.stringify({ title: "Saldo", blocks: [
+    { kind: "card", title: "Total", value: 8 },
+    { kind: "table", title: "Movimentos", columns: ["Mês", "Valor"], rows: [["Março", 8]] },
+    { kind: "bar_chart", title: "Variação", points: [{ label: "Março", value: -2 }] },
+  ] }));
+  const display = page.getByRole("dialog", { name: "Visualização" });
+  await display.getByRole("table", { name: "Movimentos" }).waitFor();
+  await display.getByText("Variação").waitFor();
+  await display.getByText("Total").waitFor();
+  await page.setViewportSize({ width: 320, height: 580 });
+  await page.waitForFunction(() => {
+    const rect = document.querySelector(".floating-window").getBoundingClientRect();
+    return rect.right <= innerWidth && rect.bottom <= innerHeight;
+  });
+  assert.ok(await noOverflow(page));
+  if (captures) await page.screenshot({ path: join(captures, "void-mobile-window.png") });
+  await page.reload();
+  await page.locator(".focus-orbit .singularity").waitFor();
+  assert.equal(await display.count(), 0);
+});
+
+test("Focus · text and recognized voice open real windows with LIVE models unavailable", { timeout: 45_000 }, async (t) => {
+  const live = await startServer(join(directory, "live.sqlite"), "LIVE");
+  liveServer = live.server;
+  const sent = [];
+  const page = await open(t, { width: 1200, height: 800 }, async (page) => {
+    page.on("request", (request) => {
+      if (request.method() === "POST" && request.url().endsWith("/messages")) sent.push(request.postDataJSON());
+    });
+    await page.addInitScript(mockInput);
+    await page.addInitScript(() => localStorage.setItem("void:voice-pause", "0.5"));
+  }, live.base, "LIVE");
+  await command(page, "Quais agentes estão disponíveis?");
+  await page.locator(".command-overlay").waitFor({ state: "hidden" });
+  await page.keyboard.press("Control+k");
+  await page.getByText("Última resposta", { exact: true }).click();
+  await page.getByText(/Agentes disponíveis:.*AgentRenderer/).waitFor();
+  await command(page, "abra configurações");
+  const settings = page.getByRole("dialog", { name: "Configurações" });
+  await settings.getByLabel("Esforço").waitFor();
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Control+k");
+  await page.clock.install();
+  await page.getByRole("button", { name: "Clique para falar" }).click();
+  await page.getByText("Escutando · fale agora", { exact: true }).waitFor();
+  await page.evaluate(() => Object.assign(window.inputMock, { pending: "Abra o painel de uso", level: 0.1 }));
+  await page.clock.runFor(160);
+  await page.evaluate(() => { window.inputMock.level = 0; });
+  await page.clock.runFor(600);
+  const usage = page.getByRole("dialog", { name: "Uso e limites" });
+  await usage.getByRole("article", { name: "OpenRouter" }).waitFor();
+  assert.deepEqual(sent.map(({ message, source }) => [message, source]), [
+    ["Quais agentes estão disponíveis?", undefined], ["abra configurações", undefined], ["Abra o painel de uso", "voice"],
+  ]);
+  if (captures) await page.screenshot({ path: join(captures, "void-live-usage.png") });
+});

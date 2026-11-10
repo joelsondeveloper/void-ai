@@ -119,6 +119,27 @@ const demoRuntime = (filename = ":memory:", maxCalls?: number) =>
   createWebRuntime({ filename, mockDelay: 0, ...(maxCalls === undefined ? {} : { maxCalls }) });
 const message = (text: string) => ({ id: randomUUID(), message: text, effort: "auto" });
 
+test("ignored voice turns finish quietly, stay idempotent and are omitted from model history", async (t) => {
+  let calls = 0;
+  const runtime = createWebRuntime({ filename: ":memory:", mock: { id: "web-demo", async generate({ model }) {
+    calls++;
+    return { model, content: '{"mode":"ignore"}', usage: { inputTokens: 2, outputTokens: 1 } };
+  } } });
+  const api = await serve(runtime, async () => assert.fail("Ignored turns must not be synthesized"));
+  t.after(api.close);
+  const path = await api.session();
+  const input = { ...message("fala ao fundo"), source: "voice" };
+  assert.equal((await api.post(path + "/messages", input)).status, 202);
+  const result = await api.waitFor(path, ({ active, turns }) => !active && turns.length === 1);
+  assert.equal(result.turns[0]?.response, "");
+  assert.equal(result.turns[0]?.failure, null);
+  assert.deepEqual(runtime.conversations.history(result.sessionId, 1), []);
+  assert.equal((await api.post(path + "/messages", input)).status, 202);
+  assert.equal((await api.post(path + "/messages/" + input.id + "/voice", {})).status, 404);
+  assert.equal((await api.post(path + "/messages", { ...input, source: "other" })).status, 400);
+  assert.equal(calls, 1);
+});
+
 test("voice API accepts only final replies from the same local session and returns audio without secrets", async (t) => {
   const runtime = demoRuntime();
   let calls = 0;
@@ -601,7 +622,7 @@ test("LIVE streams direct text, falls back only to a verified JSON model and can
 });
 
 for (const effort of ["auto", "medium"] as const) {
-  test("web and terminal use the same OpenRouter model and prompt for " + effort, { timeout: 20_000 }, async (t) => {
+  test("web and terminal share OpenRouter configuration and use their registered agents for " + effort, { timeout: 20_000 }, async (t) => {
     const model = liveModelRoutes(effort === "auto" ? "low" : effort).decision.model;
     const catalog = { data: [{ id: model, pricing: { prompt: "0", completion: "0", request: "0" },
       supported_parameters: ["response_format", "reasoning"], reasoning: { mandatory: false } }] };
@@ -637,7 +658,7 @@ for (const effort of ["auto", "medium"] as const) {
     assert.equal(terminalRequest.provider.allow_fallbacks, false);
     assert.equal(terminalRequest.provider.require_parameters, true);
 
-    let webRequest: unknown;
+    let webRequest: { messages: { role: string; content: string }[] } | undefined;
     t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
       if (url === "https://openrouter.ai/api/v1/models") return Response.json(catalog);
       assert.equal(url, "https://openrouter.ai/api/v1/chat/completions");
@@ -649,6 +670,91 @@ for (const effort of ["auto", "medium"] as const) {
     const path = await api.session();
     assert.equal((await api.post(path + "/messages", { ...message(input), effort })).status, 202);
     await api.waitFor(path, ({ turns }) => turns[0]?.response === "Verified");
-    assert.deepEqual(webRequest, { ...terminalRequest, stream: true, stream_options: { include_usage: true } });
+    assert.ok(webRequest);
+    const messages = webRequest.messages.map(({ role, content }) => ({ role, content: content.replace(
+      /Authorized catalog: (\[.*\])$/m, (_, encoded: string) => {
+        const entries: { id: string; operations: string[] }[] = JSON.parse(encoded);
+        assert.deepEqual(entries.find(({ id }) => id === "agent-renderer")?.operations, ["ui-render"]);
+        return "Authorized catalog: " + JSON.stringify(entries.filter(({ id }) => id !== "agent-renderer"));
+      }) }));
+    assert.deepEqual({ ...webRequest, messages }, { ...terminalRequest, stream: true, stream_options: { include_usage: true } });
   });
 }
+
+test("UI commands use the existing message route without an available model and keep events session-scoped", async (t) => {
+  const api = await serve(createWebRuntime({ filename: ":memory:", live: true }));
+  t.after(api.close);
+  const path = await api.session();
+  const other = await api.session();
+  const stream = await subscribe(api, path);
+  t.after(stream.close);
+  const input = { ...message("VOID, mostre o painel de uso, por favor."), source: "voice" };
+  assert.equal((await api.post(path + "/messages", input, "http://example.com")).status, 403);
+  assert.equal((await api.post(path + "/messages", input)).status, 202);
+  const { state } = await stream.until(({ active, ui }) => !active && ui?.turnId === input.id);
+  assert.deepEqual(state.ui?.action, { type: "open_panel", panel: "usage" });
+  assert.equal(state.turns[0]?.model, null);
+  assert.equal((await api.post(path + "/messages", input)).status, 202);
+  const replay = await api.waitFor(path, ({ active }) => !active);
+  assert.equal(replay.turns.length, 1);
+  assert.deepEqual(replay.ui, state.ui);
+  const otherState: Snapshot = await (await api.get(other)).json();
+  assert.equal(otherState.ui, undefined);
+  assert.equal((await api.post(path + "/messages", message("O que é workspace?"))).status, 503);
+});
+
+test("MainAgent accepts display schemas only for explicit visualization requests", async (t) => {
+  const schema = { title: "Custos", blocks: [{ kind: "card", title: "Total", value: 12 }] };
+  let calls = 0;
+  const api = await serve(createWebRuntime({ filename: ":memory:", mock: { id: "web-demo",
+    async generate({ model }) {
+      calls++;
+      return { model, content: JSON.stringify({ mode: "display", schema }) };
+    },
+  } }));
+  t.after(api.close);
+  const path = await api.session();
+  const invalid = message("Exibir " + JSON.stringify({ ...schema, html: "<script>alert(1)</script>" }));
+  assert.equal((await api.post(path + "/messages", invalid)).status, 202);
+  const rejectedSchema = await api.waitFor(path, ({ active, turns }) => !active && turns.length === 1);
+  assert.equal(rejectedSchema.ui, undefined);
+  assert.equal(calls, 0);
+  const valid = message("Crie um cartão com o total de 12.");
+  assert.equal((await api.post(path + "/messages", valid)).status, 202);
+  const accepted = await api.waitFor(path, ({ active, turns }) => !active && turns.length === 2);
+  assert.deepEqual(accepted.ui, { turnId: valid.id, action: { type: "update_panel", panel: "display", schema } });
+  assert.equal(calls, 1);
+  const ordinary = message("O que você sabe sobre mim?");
+  assert.equal((await api.post(path + "/messages", ordinary)).status, 202);
+  const rejectedDecision = await api.waitFor(path, ({ active, turns }) => !active && turns.length === 3);
+  assert.equal(rejectedDecision.turns[2]?.failure, "invalid_response");
+  assert.deepEqual(rejectedDecision.ui, accepted.ui);
+});
+
+test("MainAgent executes validated window tool calls only for components the user mentioned", async (t) => {
+  let call: unknown = { name: "ui.openWindow", arguments: { component: "settings" } };
+  const api = await serve(createWebRuntime({ filename: ":memory:", mock: { id: "web-demo",
+    async generate({ model }) { return { model, content: JSON.stringify({ mode: "tool", call }) }; },
+  } }));
+  t.after(api.close);
+  const path = await api.session();
+  const request = "Se estiver disponível, pode abrir a janela de configurações para que eu ajuste a voz?";
+  const valid = message(request);
+  assert.equal((await api.post(path + "/messages", valid)).status, 202);
+  const accepted = await api.waitFor(path, ({ active, turns }) => !active && turns.length === 1);
+  assert.deepEqual(accepted.ui, { turnId: valid.id, action: { type: "open_panel", panel: "settings" } });
+  assert.equal(accepted.turns[0]?.ui, true);
+
+  const rejected = [
+    { text: request, args: { component: "settings", url: "https://example.invalid" } },
+    { text: request, args: { component: "usage" } },
+    { text: "Como funciona o reconhecimento de voz?", args: { component: "settings" } },
+  ];
+  for (const [index, { text, args }] of rejected.entries()) {
+    call = { name: "ui.openWindow", arguments: args };
+    assert.equal((await api.post(path + "/messages", message(text))).status, 202);
+    const state = await api.waitFor(path, ({ active, turns }) => !active && turns.length === index + 2);
+    assert.equal(state.turns.at(-1)?.failure, "invalid_response");
+    assert.deepEqual(state.ui, accepted.ui);
+  }
+});

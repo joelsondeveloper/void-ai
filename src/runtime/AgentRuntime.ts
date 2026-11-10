@@ -1,7 +1,8 @@
 import { AgentRegistry } from "./AgentRegistry.js";
 import type { AgentTask, AgentResult } from "../types/task.js";
 import type { AgentContext } from "../types/context.js";
-import { describeFailure } from "../types/failure.js";
+import { describeFailure, ExecutionError } from "../types/failure.js";
+import type { AgentOperation, AgentTaskEvent, InvocationPolicy } from "./AgentOperation.js";
 
 export class AgentRuntime {
   private readonly agents: AgentRegistry;
@@ -9,6 +10,53 @@ export class AgentRuntime {
 
   constructor(agents: AgentRegistry) {
     this.agents = agents;
+  }
+
+  invoke<Input, Output>(caller: string, operation: AgentOperation<Input, Output>, input: Input,
+    context: AgentContext, policy: InvocationPolicy): Promise<Output> {
+    if (!Number.isSafeInteger(policy.maxTasks) || policy.maxTasks < 1) throw new Error("Invalid task budget.");
+    const permissions = new Set(context.permissions);
+    let remaining = policy.maxTasks;
+
+    const dispatch = async <I, O>(target: AgentOperation<I, O>, payload: I, chain: readonly string[],
+      parentTaskId: string | null, parentSignal: AbortSignal): Promise<O> => {
+      parentSignal.throwIfAborted();
+      const from = chain[chain.length - 1] ?? caller;
+      const handler = this.agents.operationFor(target, from);
+      if (!handler || !permissions.has(target.capability) || chain.includes(target.agentId)) {
+        throw new ExecutionError({ category: "permission_denied", retryable: false,
+          message: "Delegação recusada por permissão ou ciclo." });
+      }
+      if (remaining <= 0) {
+        throw new ExecutionError({ category: "budget_exceeded", retryable: false,
+          message: "O limite de tarefas delegadas foi atingido." });
+      }
+      remaining--;
+      const taskId = crypto.randomUUID();
+      const lifetime = new AbortController();
+      const signal = AbortSignal.any([parentSignal, lifetime.signal]);
+      const trace = (status: AgentTaskEvent["status"]) => policy.trace?.({
+        executionId: context.executionId, taskId, parentTaskId, caller: from,
+        agentId: target.agentId, capability: target.capability, status, at: new Date().toISOString(),
+      });
+      try {
+        trace("running");
+        const result = await handler(payload, {
+          ...context, permissions: new Set(permissions), metadata: { ...context.metadata }, signal, taskId,
+          invoke: (child, childInput) => dispatch(child, childInput, [...chain, target.agentId], taskId, signal),
+        });
+        signal.throwIfAborted();
+        trace("completed");
+        return result;
+      } catch (error) {
+        trace(signal.aborted ? "cancelled" : "failed");
+        throw error;
+      } finally {
+        lifetime.abort();
+      }
+    };
+
+    return dispatch(operation, input, [caller], null, context.signal);
   }
 
   async execute(task: AgentTask, context: AgentContext): Promise<AgentResult> {

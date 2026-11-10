@@ -114,8 +114,7 @@ function Provider({ report }: { report: ProviderReport }) {
   </article>;
 }
 
-export function ProviderPanel({ close }: { close: () => void }) {
-  const dialog = useRef<HTMLDialogElement>(null);
+export function ProviderPanel() {
   const controller = useRef<AbortController | null>(null);
   const [data, setData] = useState<ProviderDashboard>();
   const [loading, setLoading] = useState(true);
@@ -147,22 +146,11 @@ export function ProviderPanel({ close }: { close: () => void }) {
   }, []);
 
   useEffect(() => {
-    const element = dialog.current;
-    element?.showModal();
     void refresh();
-    return () => {
-      controller.current?.abort();
-      element?.close();
-    };
+    return () => controller.current?.abort();
   }, [refresh]);
 
-  return <dialog ref={dialog} className="provider-dialog" aria-labelledby="provider-heading"
-    onCancel={(event) => { event.preventDefault(); close(); }}>
-    <header className="provider-header">
-      <div><p className="kicker">Singularity OS / Telemetria</p><h2 id="provider-heading">Uso e limites</h2></div>
-      <button type="button" className="button" onClick={close}>Fechar</button>
-    </header>
-    <div className="provider-body">
+  return <div className="provider-content">
       <div className="provider-intro"><p className="muted">Acompanhe cotas dos provedores e o consumo desta instalação.</p>
         <button className="button" type="button" disabled={loading} onClick={() => void refresh()}>Atualizar</button></div>
       {loading && <p className="muted" role="status">{data ? "Consultando provedores…" : "Carregando uso local…"}</p>}
@@ -182,6 +170,5 @@ export function ProviderPanel({ close }: { close: () => void }) {
         {data.legacy && data.legacy.attempts > 0 && <p className="muted">Histórico anterior do OpenRouter · {data.legacy.attempts} requisições, {data.legacy.failed} falhas. Modelo e motivo indisponíveis nesse contador. Origem desconhecida.</p>}
         <p className="technical">Desde {time(data.since)}. Frações indicam requisições com métrica informada. Um traço indica dado indisponível.</p>
       </>}
-    </div>
-  </dialog>;
+  </div>;
 }

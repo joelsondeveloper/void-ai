@@ -28,6 +28,11 @@ export class ExecutionError extends Error {
   }
 }
 
+export function isOutputLimit(failure: ExecutionFailure): boolean {
+  return failure.category === "incomplete" &&
+    (failure.finishReason === "length" || failure.code === "max_tokens_exceeded");
+}
+
 export function describeFailure(error: unknown, signal?: AbortSignal): ExecutionFailure {
   if (signal?.aborted || (error instanceof DOMException && ["AbortError", "TimeoutError"].includes(error.name))) {
     const reason: unknown = signal?.aborted ? signal.reason : error;

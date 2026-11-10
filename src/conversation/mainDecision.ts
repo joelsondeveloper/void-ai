@@ -3,7 +3,9 @@ import { ExecutionError } from "../types/failure.js";
 import type { PlanStep } from "../types/plan.js";
 import { parseModelJson } from "./parseModelJson.js";
 
-export type MainDecision = { mode: "direct"; response: string } | { mode: "delegate"; steps: PlanStep[] };
+import { isDisplaySchema, isRenderToolCall, isWindowToolCall, type BuiltinWindow, type DisplaySchema, type RenderToolCall, type WindowToolCall } from "../web/ui-contracts.js";
+
+export type MainDecision = { mode: "tool"; call: WindowToolCall | RenderToolCall } | { mode: "display"; schema: DisplaySchema } | { mode: "direct"; response: string } | { mode: "delegate"; steps: PlanStep[] } | { mode: "ignore" };
 
 function invalid(message: string, code = "decision_schema"): never {
   throw new ExecutionError({ category: "invalid_response", code, message, retryable: false });
@@ -17,13 +19,26 @@ const hasOnly = (record: Record<string, unknown>, keys: string[]) =>
 const identifier = (value: unknown): value is string =>
   typeof value === "string" && /^[a-zA-Z0-9_-]{1,64}$/.test(value);
 
-export function parseDecision(content: unknown, stepLimit: number): MainDecision {
+export function parseDecision(content: unknown, stepLimit: number, allowIgnore = false, allowDisplay = false, windows: readonly BuiltinWindow[] = [], allowRender = false): MainDecision {
   if (typeof content !== "string") invalid("A decisão do modelo é inválida.");
   let value: unknown;
   try { value = parseModelJson(content); }
   catch { invalid("O modelo não retornou uma decisão em JSON válido.", "decision_json"); }
 
   if (!isRecord(value)) invalid("A decisão do modelo é inválida.");
+  if (allowDisplay && content.length <= 16_000 && value.mode === "display" &&
+      hasOnly(value, ["mode", "schema"]) && isDisplaySchema(value.schema)) {
+    return { mode: "display", schema: value.schema };
+  }
+  if (value.mode === "tool" && hasOnly(value, ["mode", "call"]) && isWindowToolCall(value.call) &&
+      windows.includes(value.call.arguments.component)) {
+    return { mode: "tool", call: value.call };
+  }
+  if (allowRender && content.length <= 16_000 && value.mode === "tool" &&
+      hasOnly(value, ["mode", "call"]) && isRenderToolCall(value.call)) {
+    return { mode: "tool", call: value.call };
+  }
+  if (allowIgnore && value.mode === "ignore" && hasOnly(value, ["mode"])) return { mode: "ignore" };
   if (value.mode === "direct" && hasOnly(value, ["mode", "response"]) &&
       typeof value.response === "string" && value.response.trim()) {
     return { mode: "direct", response: value.response };

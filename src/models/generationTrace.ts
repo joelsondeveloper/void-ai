@@ -15,7 +15,7 @@ export interface DecisionDiagnostic {
   trace: GenerationTrace;
   requestedModel: string;
   returnedModel?: string;
-  outcome: "direct" | "delegate" | "rejected";
+  outcome: "tool" | "display" | "direct" | "delegate" | "ignore" | "rejected";
   failure?: Pick<ExecutionFailure, "category" | "code">;
 }
 

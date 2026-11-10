@@ -24,7 +24,7 @@ export interface GovernanceOptions {
   now?: () => number;
 }
 
-interface PlanningUsage {
+export interface PlanningUsage {
   elapsedMs: number;
   usage?: ModelUsage;
   servedModel?: ServedModel;

@@ -80,6 +80,19 @@ test("direct responses produce a single final message and no execution", async (
   assert.deepEqual(conversations.history("one", 1).map(({ content }) => content), ["Olá", "Uma resposta direta."]);
 });
 
+test("the MainAgent can ignore voice noise in one decision without emitting or remembering a reply", async (t) => {
+  const { main, conversations, requests } = fixture(t, () => JSON.stringify({ mode: "ignore" }));
+  const messages: MainMessage[] = [];
+  const result = await main.run({ sessionId: "one", message: "fala ao fundo", source: "voice", context: context() },
+    (message) => { messages.push(message); });
+  assert.equal(result.kind, "ignored");
+  assert.deepEqual(messages, []);
+  assert.equal(requests.length, 1);
+  assert.deepEqual(conversations.history("one", 1), []);
+  const typed = await main.run({ sessionId: "one", message: "fala ao fundo", context: context() }, () => {});
+  assert.equal(typed.kind, "error");
+});
+
 test("the versioned persona scopes its style to direct response text and can be disabled", async (t) => {
   const reply = "A premissa precisa de um teste. Sem os dados, ainda é hipótese.";
   const { main, open, requests } = fixture(t, () => direct(reply), { persona: "void-v1", historyTurns: 0 });

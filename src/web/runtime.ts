@@ -1,5 +1,6 @@
 import { setTimeout } from "node:timers/promises";
 import { MainAgent } from "../agents/MainAgent.js";
+import { AgentRenderer } from "../agents/AgentRenderer.js";
 import { DevAgent } from "../agents/DevAgent.js";
 import { ResearchAgent } from "../agents/ResearchAgent.js";
 import { SQLiteConversationStore } from "../conversation/ConversationStore.js";
@@ -21,6 +22,11 @@ import { createAccountReader, emptyAccount } from "./provider-accounts.js";
 import type { ProviderDashboard } from "./provider-contracts.js";
 import { createVoiceService, voiceConfiguration } from "./voice.js";
 
+import { UiRuntimeService } from "./ui-runtime.js";
+import { ComponentRegistry } from "./ComponentRegistry.js";
+import { previewPermission } from "./render-contracts.js";
+import { renderWindow } from "./render-operations.js";
+
 export const mockProviderId = "web-demo";
 
 function demoProvider(delay: number): ModelProvider {
@@ -32,7 +38,16 @@ function demoProvider(delay: number): ModelProvider {
       if (delay) await setTimeout(delay, undefined, { signal });
       signal?.throwIfAborted();
       let content: string;
-      if (system.startsWith("VOID_DECISION")) {
+      if (system.startsWith("VOID_DECISION") && system.includes("ui.render") && /\bcontador\b/i.test(input)) {
+        content = JSON.stringify({ mode: "tool", call: { name: "ui.render",
+          arguments: { brief: input, key: /expedições/i.test(input) ? "contador-de-expedicoes" : "contador" } } });
+      } else if (system.startsWith("VOID_UI_AUTHOR") && /expedições/i.test(input)) {
+        content = JSON.stringify({ title: "Expedições da equipe",
+          source: 'export default function Component() { return (<section className="stack"><header><h1>Expedições da equipe</h1><p className="muted">Registre as saídas de campo desta sessão.</p></header><article className="card"><h2>Diário de campo</h2><Counter label="Expedições" /><Toggle label="Equipamento conferido" /></article></section>); }' });
+      } else if (system.startsWith("VOID_UI_AUTHOR") && /contador/i.test(input)) {
+        content = JSON.stringify({ title: "Contador",
+          source: 'export default function Component() { return (<section><h1>Contador</h1><Counter label="Contador" /></section>); }' });
+      } else if (system.startsWith("VOID_DECISION")) {
         content = JSON.stringify(/analis[ea]|compare|função|falha simulada/i.test(input) ? {
           mode: "delegate",
           steps: [
@@ -98,15 +113,29 @@ export function createWebRuntime(options: {
   const router = new ModelRouter(provider ? [provider] : []);
   const registry = new AgentRegistry();
   const defaults = { providerId: options.live ? "openrouter" : local.id, model: options.live ? "openrouter/free" : "main-local" };
-  registry.register(new DevAgent(router, defaults));
+  const dev = new DevAgent(router, defaults);
+  registry.register(dev);
+  const ui = new UiRuntimeService();
+  const components = new ComponentRegistry(options.filename);
+  dev.registerUiAuthor(registry, components);
+  const renderer = new AgentRenderer(components, ui);
+  registry.register(renderer);
+  renderer.register(registry);
+  const agentRuntime = new AgentRuntime(registry);
   registry.register(new ResearchAgent(router, defaults));
-  const permissions = new Set(registry.list().flatMap(({ definition }) => definition.capabilities));
+  const permissions = registry.capabilities();
+  permissions.add(previewPermission);
   const conversations = new SQLiteConversationStore(options.filename);
   const checkpoints = new SQLiteCheckpointStore(options.filename);
-  const governance = new ExecutionGovernance(new AgentRuntime(registry), checkpoints, {
+  const governance = new ExecutionGovernance(agentRuntime, checkpoints, {
     trustedLocalProviders: options.live ? [] : [local.id],
   });
-  const main = new MainAgent(router, registry, governance, conversations, { ...defaults, routesForEffort: routes });
+  const main = new MainAgent(router, registry, governance, conversations, {
+    ...defaults, routesForEffort: routes, ui, componentCatalog: (sessionId) => components.catalog(sessionId),
+    render: (input, context, maxTasks) => agentRuntime.invoke("main-agent", renderWindow, input, context, {
+      maxTasks, trace: (event) => components.trace(event),
+    }),
+  });
   function providerDashboard(): ProviderDashboard {
     const at = Date.now();
     const routerAccount = emptyAccount(options.key ? "not_checked" : "not_configured", at);
@@ -131,7 +160,7 @@ export function createWebRuntime(options: {
     };
   }
   return {
-    main, conversations, permissions, limits, live: !!options.live, available: !!provider,
+    main, ui, conversations, components, permissions, limits, live: !!options.live, available: !!provider,
     usage: () => ({ mode: "observe", windows: usage?.snapshot() ?? [] }),
     voice,
     providerDashboard,
@@ -154,7 +183,7 @@ export function createWebRuntime(options: {
           models: null, effort, demoCap: null };
       }
     },
-    close() { conversations.close(); checkpoints.close(); usage?.close(); providerUsage.close(); },
+    close() { conversations.close(); checkpoints.close(); usage?.close(); providerUsage.close(); components.close(); },
   };
 }
 

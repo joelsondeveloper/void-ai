@@ -3,11 +3,14 @@ import type { Effort, ExecutionLimits, ExplicitEffort } from "../governance/effo
 import type { FailureCategory } from "../types/failure.js";
 import type { ModelRoutes, ServedModel } from "../types/model.js";
 
+import type { UiEvent } from "./ui-contracts.js";
+
 export type { Effort, Extension };
 export const efforts = ["auto", "low", "medium", "high", "max"] as const;
 
 export interface Session { id: string; title: string }
 export interface Turn {
+  ui?: true;
   id: string;
   request: string;
   response: string | null;
@@ -53,6 +56,7 @@ export interface Snapshot {
   turns: Turn[];
   executions: Execution[];
   notices: Notice[];
+  ui?: UiEvent;
   active: { turnId: string; executionId: string | null; draft?: string } | null;
 }
 export type ActionName = "pause" | "cancel" | "resume" | "approve";

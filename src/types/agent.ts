@@ -14,8 +14,10 @@ export interface AgentDefinition {
     capabilities: string[];
 }
 
-export interface ExecutableAgent {
+export interface AgentIdentity {
     readonly definition: AgentDefinition;
+}
 
+export interface ExecutableAgent extends AgentIdentity {
     execute(task: AgentTask, context: AgentContext): Promise<AgentOutput>;
 }

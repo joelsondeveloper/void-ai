@@ -10,7 +10,7 @@ export interface ConversationTurn {
 
 export interface ConversationStore {
   history(sessionId: string, turns: number): ModelMessage[];
-  recordDirect(sessionId: string, request: string, response: string, turnId?: string, model?: ServedModel): void;
+  recordDirect(sessionId: string, request: string, response: string, turnId?: string, model?: ServedModel, ui?: boolean): void;
   bind(sessionId: string, executionId: string, request: string, turnId?: string, introduction?: string): void;
   find(sessionId: string, executionId: string): ConversationTurn | undefined;
   complete(sessionId: string, executionId: string, response: string): void;
@@ -40,6 +40,9 @@ export class SQLiteConversationStore implements ConversationStore {
     if (!columns.some(({ name }) => name === "model")) {
       this.db.exec("ALTER TABLE conversation_turns ADD COLUMN model TEXT");
     }
+    if (!columns.some(({ name }) => name === "ui")) {
+      this.db.exec("ALTER TABLE conversation_turns ADD COLUMN ui INTEGER NOT NULL DEFAULT 0");
+    }
     if (!columns.some(({ name }) => name === "introduction")) {
       this.db.exec("ALTER TABLE conversation_turns ADD COLUMN introduction TEXT");
     }
@@ -53,7 +56,7 @@ export class SQLiteConversationStore implements ConversationStore {
 
   sessions() {
     return this.db.prepare(`
-      SELECT id, (SELECT request FROM conversation_turns WHERE session_id = conversation_sessions.id ORDER BY rowid LIMIT 1) AS title
+      SELECT id, (SELECT request FROM conversation_turns WHERE session_id = conversation_sessions.id AND ui = 0 ORDER BY rowid LIMIT 1) AS title
       FROM conversation_sessions
       UNION ALL
       SELECT session_id, request FROM conversation_turns
@@ -71,7 +74,7 @@ export class SQLiteConversationStore implements ConversationStore {
 
   turns(sessionId: string) {
     return this.db.prepare(`
-      SELECT id, request, response, execution_id, failure, model, introduction FROM conversation_turns
+      SELECT id, request, response, execution_id, failure, model, introduction, ui FROM conversation_turns
       WHERE session_id = ? ORDER BY rowid
     `).all(sessionId);
   }
@@ -93,24 +96,24 @@ export class SQLiteConversationStore implements ConversationStore {
     if (!Number.isSafeInteger(turns) || turns < 0 || turns > 12) throw new Error("Invalid history limit.");
     const rows = this.db.prepare(`
       SELECT request, response FROM conversation_turns
-      WHERE session_id = ? AND response IS NOT NULL ORDER BY rowid DESC LIMIT ?
+      WHERE session_id = ? AND response <> '' AND ui = 0 ORDER BY rowid DESC LIMIT ?
     `).all(sessionId, turns).reverse();
     return rows.flatMap(({ request, response }): ModelMessage[] =>
       typeof request === "string" && typeof response === "string"
         ? [{ role: "user", content: request }, { role: "assistant", content: response }] : []);
   }
 
-  recordDirect(sessionId: string, request: string, response: string, turnId?: string, model?: ServedModel): void {
+  recordDirect(sessionId: string, request: string, response: string, turnId?: string, model?: ServedModel, ui = false): void {
     if (turnId !== undefined) {
       const { changes } = this.db.prepare(`
-        UPDATE conversation_turns SET response = ?, model = ?
+        UPDATE conversation_turns SET response = ?, model = ?, ui = ?
         WHERE session_id = ? AND id = ? AND request = ? AND execution_id IS NULL AND response IS NULL
-      `).run(response, model?.returned ?? null, sessionId, turnId, request);
+      `).run(response, model?.returned ?? null, Number(ui), sessionId, turnId, request);
       if (changes !== 1) throw new Error("Missing conversation turn.");
       return;
     }
-    this.db.prepare("INSERT INTO conversation_turns (id, session_id, request, response) VALUES (?, ?, ?, ?)")
-      .run(randomUUID(), sessionId, request, response);
+    this.db.prepare("INSERT INTO conversation_turns (id, session_id, request, response, ui) VALUES (?, ?, ?, ?, ?)")
+      .run(randomUUID(), sessionId, request, response, Number(ui));
   }
 
   bind(sessionId: string, executionId: string, request: string, turnId?: string, introduction?: string): void {

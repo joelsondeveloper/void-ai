@@ -20,6 +20,7 @@ export function speakableText(text: string): string {
 }
 
 export function finalReply(snapshot: Snapshot, turn: Turn): string | undefined {
+  if (turn.ui) return undefined;
   if (!turn.response || turn.failure || snapshot.active?.turnId === turn.id) return;
   if (!turn.executionId) return turn.response;
   if (!turn.response.startsWith("Execução concluída.\n\n")) return;

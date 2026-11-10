@@ -4,8 +4,9 @@ import type { Readable } from "node:stream";
 import type { MainMessageSink } from "../agents/MainAgent.js";
 import type { ExecutionCheckpoint } from "../governance/checkpoint.js";
 import { positiveInteger, safetyCaps, validateLimits } from "../governance/effort.js";
-import { failureCategories, type ExecutionFailure, type FailureCategory } from "../types/failure.js";
+import { failureCategories, isOutputLimit, type ExecutionFailure, type FailureCategory } from "../types/failure.js";
 import { efforts, isFailureDetail, type FailureDetail, type ActionName, type Effort, type Execution, type Extension, type Notice, type Snapshot } from "./contracts.js";
+import { previewDocument } from "./component-preview.js";
 import type { WebRuntime } from "./runtime.js";
 import { VoiceError, type createVoiceService } from "./voice.js";
 import { finalReply, speakableText } from "./voice-text.js";
@@ -84,7 +85,7 @@ function publicDetail(failure: ExecutionFailure | undefined): FailureDetail | un
   if (failure?.category === "invalid_response" && isFailureDetail(failure.code) &&
       (failure.code.startsWith("decision_") || failure.code === "plan_invalid")) return failure.code;
   if (failure?.category === "incomplete") {
-    if (failure.finishReason === "length" || failure.code === "max_tokens_exceeded") return "output_limit";
+    if (isOutputLimit(failure)) return "output_limit";
     if (failure.finishReason === "content_filter" || failure.finishReason === "tool_calls") return failure.finishReason;
   }
   if (failure && (failure.category === "http" || failure.category === "api") &&
@@ -127,7 +128,7 @@ function project(checkpoint: ExecutionCheckpoint, active: boolean): Execution {
 type Job = { turnId: string; executionId: string | null; controller: AbortController; draft?: string };
 
 export function createWebApi(runtime: WebRuntime, port: () => number, voice: ReturnType<typeof createVoiceService> | undefined = runtime.voice) {
-  const { main, conversations } = runtime;
+  const { main, conversations, ui } = runtime;
   const jobs = new Map<string, Job>();
   const subscribers = new Map<string, Set<Response>>();
   const notices = new Map<string, Notice[]>();
@@ -157,10 +158,12 @@ export function createWebApi(runtime: WebRuntime, port: () => number, voice: Ret
       const failure = failureCategories.find((category) => category === savedCategory) ?? (interrupted ? "interrupted" : null);
       const introduction = asString(row.introduction);
       return [{ id, request, response, executionId, failure, model: asString(row.model),
+        ...(row.ui === 1 ? { ui: true as const } : {}),
         ...(introduction ? { introduction } : {}),
         ...(isFailureDetail(detail) ? { failureDetail: detail } : {}) }];
     });
-    return { sessionId, turns, executions, notices: notices.get(sessionId) ?? [],
+    const uiEvent = ui.latest(sessionId);
+    return { sessionId, turns, executions, ...(uiEvent ? { ui: uiEvent } : {}), notices: notices.get(sessionId) ?? [],
       active: active ? { turnId: active.turnId, executionId: active.executionId, ...(active.draft ? { draft: active.draft } : {}) } : null };
   }
 
@@ -214,7 +217,9 @@ export function createWebApi(runtime: WebRuntime, port: () => number, voice: Ret
     let reported = false;
     const sink: MainMessageSink = (message) => {
       if (message.executionId) job.executionId = message.executionId;
-      if (message.type === "draft") {
+      if (message.type === "ui") {
+        ui.publish(sessionId, { turnId, action: message.action });
+      } else if (message.type === "draft") {
         job.draft = message.text;
       } else if (message.type === "error") {
         delete job.draft;
@@ -324,25 +329,44 @@ export function createWebApi(runtime: WebRuntime, port: () => number, voice: Ret
       } else {
         if (resource !== "sessions" || !sessionId || !sessionPattern.test(sessionId) || !conversations.hasSession(sessionId)) missing();
         if (method === "GET" && subresource === undefined) json(response, 200, snapshot(sessionId));
+        else if (method === "GET" && subresource === "components" && id && /^[a-f0-9]{64}$/.test(id) &&
+            operation && /^[1-9][0-9]{0,14}$/.test(operation)) {
+          const fetchSite = request.headers["sec-fetch-site"];
+          if (fetchSite && fetchSite !== "same-origin" && fetchSite !== "none") missing();
+          const draft = runtime.components.preview(sessionId, { id, version: Number(operation) }) ?? missing();
+          const { policy, html } = previewDocument(draft.compiled);
+          response.writeHead(200, {
+            "Content-Type": "text/html; charset=utf-8", "Content-Security-Policy": policy,
+            "Referrer-Policy": "no-referrer", "Cache-Control": "no-store",
+            "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+          });
+          response.end(html);
+        }
         else if (method === "GET" && subresource === "events" && id === undefined) stream(sessionId, response);
         else if (method === "POST" && subresource === "messages" && id === undefined) {
           const data = await body(request);
-          const { id, message } = data;
+          const { id, message, source } = data;
           const level = effort(data.effort);
           if (typeof id !== "string" || !uuid.test(id) || typeof message !== "string" ||
               !message.trim() || message.length > 16_000 ||
-              Object.keys(data).some((key) => !["id", "message", "effort"].includes(key))) invalid();
+              (source !== undefined && source !== "voice") ||
+              Object.keys(data).some((key) => !["id", "message", "effort", "source"].includes(key))) invalid();
           const text = message.trim();
           const existing = conversations.turns(sessionId).find((turn) => turn.id === id);
           if (existing) {
             if (existing.request !== text) conflict("Identificador já utilizado nesta sessão.");
           } else {
-            checkAvailable(level);
+            if (!main.localCommand(text, runtime.permissions)) checkAvailable(level);
             if (jobs.has(sessionId)) conflict("A sessão já está em processamento.");
             if (!conversations.beginTurn(sessionId, id, text)) conflict("Identificador já utilizado.");
-            start(sessionId, id, null, (signal, sink) => main.run({
-              sessionId, message: text, turnId: id, context: context(sessionId, signal), effort: level, limits: runtime.limits, stream: runtime.live,
-            }, sink));
+            start(sessionId, id, null, async (signal, sink) => {
+              const result = await main.run({
+                sessionId, message: text, turnId: id, context: context(sessionId, signal), effort: level,
+                limits: runtime.limits, stream: runtime.live, ...(source === "voice" ? { source } : {}),
+              }, sink);
+              if (result.kind === "ignored") conversations.recordDirect(sessionId, text, "", id);
+              return result;
+            });
           }
           json(response, 202, { id });
         } else if (method === "POST" && subresource === "messages" && id && uuid.test(id) && operation === "cancel") {
