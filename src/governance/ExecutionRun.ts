@@ -6,6 +6,7 @@ import type { PlanExecutor } from "../runtime/PlanExecutor.js";
 import type { AgentContext } from "../types/context.js";
 import { ExecutionError, type ExecutionFailure } from "../types/failure.js";
 import type { ModelUsage } from "../types/model.js";
+import type { AgentOutput } from "../types/agent.js";
 import type { DependencyResult, PlanStep, PlanStepExecution } from "../types/plan.js";
 import { Capacity } from "./Capacity.js";
 import type { CheckpointLease } from "./CheckpointStore.js";
@@ -139,7 +140,7 @@ export class ExecutionRun {
     }
   }
 
-  private async runStep(step: PlanStep, dependencies?: readonly DependencyResult[]): Promise<string> {
+  private async runStep(step: PlanStep, dependencies?: readonly DependencyResult[]): Promise<string | AgentOutput> {
     const inFlight = new Set<Promise<unknown>>();
     let open = true;
     const gate: ModelGate = (provider, request, dispatch) => {
@@ -150,12 +151,10 @@ export class ExecutionRun {
       return call;
     };
     try {
-      const modelRoute = step.agentId === "dev-agent" || step.agentId === "research-agent"
-        ? this.checkpoint.modelRoutes?.[step.agentId] : undefined;
       const run = createRuntimeStepRunner(this.runtime, {
         ...this.context, executionId: this.checkpoint.id, signal: this.executionSignal,
-        ...(modelRoute ? { modelRoute } : {}),
-      }, this.includeDependencyResults);
+        ...(this.checkpoint.modelRoutes ? { modelRoutes: this.checkpoint.modelRoutes } : {}),
+      }, this.includeDependencyResults, this.checkpoint.limits.steps - 1);
       return await runWithModelGate(gate, () => run(step, dependencies));
     } finally {
       open = false;
@@ -211,8 +210,9 @@ export class ExecutionRun {
       let metrics: ModelUsage | undefined;
       try {
         const trace = currentGenerationTrace();
-        const response = await (trace && step
-          ? withGenerationTrace({ ...trace, role: "specialist", stepId: step.id, agentId: step.agentId },
+        const agentId = trace?.agentId ?? step?.agentId;
+        const response = await (trace && step && agentId
+          ? withGenerationTrace({ ...trace, role: "specialist", stepId: step.id, agentId },
             () => dispatch({ ...request, signal }))
           : dispatch({ ...request, signal }));
         metrics = response.usage;
@@ -222,8 +222,7 @@ export class ExecutionRun {
         }
         if (this.checkpoint.servedModels && isModelLabel(provider) && isModelLabel(request.model) &&
             isModelLabel(response.model)) {
-          const role = step === undefined ? "synthesis"
-            : step.agentId === "dev-agent" || step.agentId === "research-agent" ? step.agentId : "specialist";
+          const role = step === undefined ? "synthesis" : agentId ?? "specialist";
           this.checkpoint.servedModels.push({ role, providerId: provider, requested: request.model,
             returned: response.model, ...(stepId === undefined ? {} : { stepId }) });
         }

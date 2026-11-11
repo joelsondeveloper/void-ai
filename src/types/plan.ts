@@ -1,3 +1,5 @@
+import type { AgentOutput } from "./agent.js";
+import type { UiAction } from "../web/ui-contracts.js";
 import type { ExecutionFailure } from "./failure.js";
 
 export type PlanStatus =
@@ -19,7 +21,7 @@ export interface DependencyResult {
   output: string;
 }
 
-export type StepRunner = (step: PlanStep, dependencies?: readonly DependencyResult[]) => Promise<string>;
+export type StepRunner = (step: PlanStep, dependencies?: readonly DependencyResult[]) => Promise<string | AgentOutput>;
 
 export interface PlanStepExecution {
   stepId: string;
@@ -27,6 +29,7 @@ export interface PlanStepExecution {
   startedAt: Date | null;
   finishedAt: Date | null;
   output: string | null;
+  action?: UiAction;
   error: string | null;
   failure?: ExecutionFailure;
 }

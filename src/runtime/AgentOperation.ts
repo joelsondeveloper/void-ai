@@ -33,9 +33,12 @@ export interface InvocationPolicy {
 export type OperationHandler<Input, Output> = (input: Input, context: AgentInvocation) => Promise<Output>;
 
 // Metadata and validation travel with the operation registered for execution.
+export type AgentGeneration = (agentId: string, instructions: string, prompt: string, signal: AbortSignal,
+  fallbackTokens: number) => Promise<string>;
+
 export interface ModelToolResources {
   sessionId: string;
-  generate: (instructions: string, prompt: string, signal: AbortSignal) => Promise<string>;
+  generate: AgentGeneration;
 }
 
 export interface ModelTool<Input = unknown> {

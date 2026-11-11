@@ -1,4 +1,4 @@
-import type { ModelRoute } from "./model.js";
+import type { ModelRoute, ModelRoutes } from "./model.js";
 
 export interface AgentContext {
     executionId: string
@@ -7,4 +7,6 @@ export interface AgentContext {
     signal: AbortSignal
     metadata: Record<string, unknown>
     modelRoute?: ModelRoute
+    modelRoutes?: ModelRoutes
+    sessionId?: string
 }

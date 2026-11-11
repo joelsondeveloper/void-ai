@@ -98,12 +98,13 @@ test("Deve converter a etapa em tarefa, preservar o contexto e retornar a saída
   assert.equal(task.objective, step.objective);
   assert.deepEqual(statuses, ["running"]);
   assert.equal(task.status, "completed");
-  assert.equal(agentContext, context);
+  assert.equal(agentContext.taskId, task.id);
   assert.equal(agentContext.executionId, "execucao-de-teste");
   assert.deepEqual(agentContext.permissions, new Set(["testing"]));
   assert.equal(agentContext.budgetLimit, 100);
   assert.deepEqual(agentContext.metadata, { source: "integration-test" });
-  assert.equal(agentContext.signal, signal);
+  assert.equal(agentContext.signal.aborted, true);
+  assert.equal(signal.aborted, false);
   assert.equal(executions.get("A")?.status, "completed");
   assert.equal(executions.get("A")?.output, "Resultado do agente A");
   assert.equal(executions.get("A")?.error, null);

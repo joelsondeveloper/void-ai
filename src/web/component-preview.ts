@@ -1,31 +1,20 @@
 import { randomBytes } from "node:crypto";
 import { buildSync } from "esbuild";
 
-let previewRuntime: string | undefined;
+import { fileURLToPath } from "node:url";
 
-function runtime() {
-  return previewRuntime ??= buildSync({
-    stdin: {
-      resolveDir: process.cwd(),
-      loader: "jsx",
-      contents: [
-        'import React from "react";',
-        'import { createRoot } from "react-dom/client";',
-        'function Counter({ label }) {',
-        '  const [value, setValue] = React.useState(0);',
-        '  return <div className="widget"><span className="widget-label">{label}</span><button type="button" aria-label={label + ": diminuir"} onClick={() => setValue(v => v - 1)}>−</button><output aria-live="polite">{value}</output><button type="button" aria-label={label + ": aumentar"} onClick={() => setValue(v => v + 1)}>+</button></div>;',
-        '}',
-        'function Toggle({ label }) {',
-        '  const [checked, setChecked] = React.useState(false);',
-        '  return <label className="widget"><input type="checkbox" checked={checked} onChange={event => setChecked(event.target.checked)}/>{label}</label>;',
-        '}',
-        'window.mountVoidPreview = (render) => createRoot(document.getElementById("preview")).render(render(React, Counter, Toggle));',
-        'window.addEventListener("keydown", event => { if (event.key === "Escape") parent.postMessage("void-preview-escape", "*"); });',
-      ].join("\n"),
-    },
-    bundle: true, write: false, minify: true, platform: "browser",
-    define: { "process.env.NODE_ENV": '"production"' },
-  }).outputFiles[0]?.text ?? "";
+const bundles = new Map<string, string>();
+
+function runtime(file: string): string {
+  const cached = bundles.get(file);
+  if (cached) return cached;
+  const output = buildSync({
+    entryPoints: [fileURLToPath(new URL(file, import.meta.url))], bundle: true, write: false,
+    minify: true, platform: "browser", define: { "process.env.NODE_ENV": '"production"' },
+  }).outputFiles[0];
+  if (!output) throw new Error("Preview runtime bundle is missing.");
+  bundles.set(file, output.text);
+  return output.text;
 }
 
 const style = [
@@ -42,14 +31,18 @@ export function previewDocument(compiled: string) {
   const policy = [
     "sandbox allow-scripts", "default-src 'none'", "base-uri 'none'", "form-action 'none'",
     "frame-src 'none'", "object-src 'none'", "frame-ancestors 'self'",
-    "script-src 'nonce-" + nonce + "'", "style-src 'nonce-" + nonce + "'",
+    "script-src 'nonce-" + nonce + "'", "style-src 'unsafe-inline'", "worker-src blob:",
   ].join("; ");
-  const script = (runtime() + "\nwindow.mountVoidPreview((React, Counter, Toggle) => {\n" + compiled +
-    "\nreturn React.createElement(Component);\n});").replace(/<\/script/gi, "<\\/script");
+  // This string becomes a worker program, never a script in the DOM realm.
+  const worker = runtime("./preview-worker.mjs") +
+    "\nglobalThis.loadVoidComponent = function(require, module, exports, React, Counter, Toggle) {\n" +
+    compiled + "\n;return module.exports.default ?? (typeof Component === 'function' ? Component : undefined);\n};";
+  const payload = JSON.stringify(worker).replace(/</g, "\\u003c");
   return {
     policy,
     html: '<!doctype html><html lang="pt-BR"><meta charset="utf-8"><meta name="viewport" content="width=device-width">' +
-      '<title>Prévia isolada</title><style nonce="' + nonce + '">' + style + '</style>' +
-      '<main id="preview"></main><script nonce="' + nonce + '">' + script + '</script></html>',
+      '<title>Prévia isolada</title><style>' + style + '</style><main id="preview"></main>' +
+      '<script type="application/json" id="worker-source">' + payload + '</script>' +
+      '<script nonce="' + nonce + '">' + runtime("./preview-frame.mjs") + '</script></html>',
   };
 }

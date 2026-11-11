@@ -158,7 +158,7 @@ export class PlanExecutor {
           return dependency?.status === "completed" && dependency.output !== null
             ? [{ stepId, output: dependency.output }] : [];
         });
-        let output: string;
+        let output: Awaited<ReturnType<StepRunner>>;
         try {
           output = await runner(step, dependencies);
         } catch (error) {
@@ -177,7 +177,8 @@ export class PlanExecutor {
           return;
         }
 
-        execution.output = output;
+        execution.output = typeof output === "string" ? output : output.content;
+        if (typeof output !== "string" && output.action) execution.action = output.action;
         this.updateStepStatus(executions, step.id, "completed");
         scheduling?.changed(execution);
       } catch (error) {

@@ -93,7 +93,7 @@ npm.cmd install
 npm.cmd run dev:web
 ```
 
-Abra [http://127.0.0.1:3030](http://127.0.0.1:3030). O modo padrão, **MOCK**, usa respostas simuladas e executa o MainAgent e os especialistas do núcleo. Para usar o OpenRouter, configure `OPENROUTER_API_KEY` no ambiente ou no arquivo local `.env` e execute `npm.cmd run dev:web:live`. O indicador **LIVE** identifica o modo selecionado. Perguntas que dependem de modelo exigem uma credencial e rotas gratuitas válidas. Os comandos locais de interface funcionam sem credencial. A autorização e a verificação de gratuidade continuam a cargo do núcleo e do provedor.
+Abra [http://127.0.0.1:3030](http://127.0.0.1:3030). O modo padrão, **MOCK**, usa respostas simuladas e executa o MainAgent e os especialistas do núcleo. Para usar o OpenRouter, configure `OPENROUTER_API_KEY` no ambiente ou no arquivo local `.env` e execute `npm.cmd run dev:web:live`. O indicador **LIVE** identifica o modo selecionado. Perguntas que dependem de modelo exigem uma credencial e rotas gratuitas válidas. Os comandos de interface por texto e voz também passam pelo modelo. Os controles manuais são locais. A autorização e a verificação de gratuidade continuam a cargo do núcleo e do provedor.
 
 - **Focus** mostra apenas o anel. Clique no anel ou pressione **Ctrl+K** (**⌘K** no Mac) para abrir a entrada de texto e voz. Enter envia e Shift+Enter insere uma quebra de linha.
 - Diga ou digite **modo workspace** para abrir a interface completa e **voltar ao focus** para retornar ao anel. **Workspace** mostra dependências, etapas, modelos, resultados originais e eventos. No celular, alterne entre Conversa e Operações. O seletor de esforço em **Configurações** vale para o próximo envio e as rotas de uma execução existente vêm do checkpoint.

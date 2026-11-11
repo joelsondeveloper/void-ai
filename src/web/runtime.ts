@@ -1,4 +1,4 @@
-import { setTimeout } from "node:timers/promises";
+import { demoProvider } from "./demo-provider.js";
 import { MainAgent } from "../agents/MainAgent.js";
 import { AgentRenderer } from "../agents/AgentRenderer.js";
 import { DevAgent } from "../agents/DevAgent.js";
@@ -26,53 +26,7 @@ import { UiRuntimeService } from "./ui-runtime.js";
 import { ComponentRegistry } from "./ComponentRegistry.js";
 import { previewPermission } from "./render-contracts.js";
 
-export const mockProviderId = "web-demo";
-
-function demoProvider(delay: number): ModelProvider {
-  return {
-    id: mockProviderId,
-    async generate({ model, messages, signal }) {
-      const input = messages.at(-1)?.content ?? "";
-      const system = messages[0]?.content ?? "";
-      if (delay) await setTimeout(delay, undefined, { signal });
-      signal?.throwIfAborted();
-      let content: string;
-      if (system.startsWith("VOID_DECISION") && system.includes("ui.render") && /\bcontador\b/i.test(input)) {
-        content = JSON.stringify({ mode: "tool", call: { name: "ui.render",
-          arguments: { brief: input, key: /expedições/i.test(input) ? "contador-de-expedicoes" : "contador" } } });
-      } else if (system.startsWith("VOID_UI_AUTHOR") && /expedições/i.test(input)) {
-        content = JSON.stringify({ title: "Expedições da equipe",
-          source: 'export default function Component() { return (<section className="stack"><header><h1>Expedições da equipe</h1><p className="muted">Registre as saídas de campo desta sessão.</p></header><article className="card"><h2>Diário de campo</h2><Counter label="Expedições" /><Toggle label="Equipamento conferido" /></article></section>); }' });
-      } else if (system.startsWith("VOID_UI_AUTHOR") && /contador/i.test(input)) {
-        content = JSON.stringify({ title: "Contador",
-          source: 'export default function Component() { return (<section className="stack"><header><h1>Contador</h1><p className="muted">Use os controles para ajustar a contagem nesta sessão.</p></header><article className="card"><Counter label="Contagem" /></article></section>); }' });
-      } else if (system.startsWith("VOID_DECISION")) {
-        content = JSON.stringify(/analis[ea]|compare|função|falha simulada/i.test(input) ? {
-          mode: "delegate",
-          steps: [
-            { id: "A", agentId: "dev-agent", requiredCapability: "code-analysis", objective: input, dependsOn: [] },
-            { id: "B", agentId: "research-agent", requiredCapability: "comparative-analysis", objective: input, dependsOn: ["A"] },
-          ],
-        } : {
-          mode: "direct",
-          response: /concorr[êe]ncia/i.test(input) && /paralelismo/i.test(input)
-            ? "Concorrência é fazer várias tarefas progredirem no mesmo período, por exemplo, alternando entre elas em um único núcleo. Paralelismo é executá-las de fato ao mesmo tempo, por exemplo, usando dois núcleos."
-            : "O modo simulado tem cenários fixos. Experimente perguntar sobre concorrência e paralelismo ou pedir uma análise com os especialistas.",
-        });
-      } else if (system.startsWith("VOID_SYNTHESIS")) {
-        const { evidence }: { evidence: Record<string, string> } = JSON.parse(input);
-        content = JSON.stringify({ answer: Object.values(evidence).join("\n\n"),
-          sources: Object.fromEntries(Object.entries(evidence).map(([id, output]) => [id, output.slice(0, 120)])) });
-      } else if (model === "research-local") {
-        if (/falha simulada/i.test(input)) throw new Error("Simulated specialist failure");
-        content = "Comparação simulada: validar a correção com casos-limite é mais rápido que refatorar a função inteira. A refatoração ganha valor se houver outros problemas recorrentes.";
-      } else {
-        content = "Análise simulada: defina o comportamento para entradas vazias e cubra esse caso com um teste. Verifique também se o retorno preserva o tipo esperado.";
-      }
-      return { model, content, usage: { inputTokens: 12, outputTokens: 20 } };
-    },
-  };
-}
+export { mockProviderId } from "./demo-provider.js";
 
 export function createWebRuntime(options: {
   filename: string; live?: boolean; key?: string; maxCalls?: number; mockDelay?: number; mock?: ModelProvider;
@@ -102,10 +56,11 @@ export function createWebRuntime(options: {
     }, new OpenRouterFreeCatalog(), freeFallbackModels) : undefined;
   const provider = options.live ? live : local;
   const routes = (effort: ExplicitEffort): ModelRoutes => {
-    if (options.live) return liveModelRoutes(effort);
+    const definitions = registry.list().map(({ definition }) => definition);
+    if (options.live) return liveModelRoutes(effort, process.env, definitions);
     const route = (model: string) => ({ providerId: local.id, model, maxOutputTokens: 1600 });
     return { decision: route("main-local"), synthesis: route("main-local"),
-      "dev-agent": route("dev-local"), "research-agent": route("research-local") };
+      ...Object.fromEntries(definitions.flatMap(({ id, model }) => model ? [[id, route(model.configKey.toLowerCase() + "-local")]] : [])) };
   };
   const limits = options.maxCalls === undefined ? {} : { calls: options.maxCalls };
   resolveEffort("auto", limits);
@@ -116,12 +71,12 @@ export function createWebRuntime(options: {
   registry.register(dev);
   const ui = new UiRuntimeService();
   const components = new ComponentRegistry(options.filename);
-  dev.registerUiAuthor(registry, components);
-  const renderer = new AgentRenderer(components, ui);
+  dev.registerUiAuthor(registry);
+  const renderer = new AgentRenderer(router, components, ui, defaults);
   registry.register(renderer);
   renderer.register(registry);
-  const agentRuntime = new AgentRuntime(registry);
   registry.register(new ResearchAgent(router, defaults));
+  const agentRuntime = new AgentRuntime(registry, (event) => components.trace(event));
   const permissions = registry.capabilities();
   permissions.add(previewPermission);
   const conversations = new SQLiteConversationStore(options.filename);
@@ -130,9 +85,9 @@ export function createWebRuntime(options: {
     trustedLocalProviders: options.live ? [] : [local.id],
   });
   const main = new MainAgent(router, registry, governance, conversations, {
-    ...defaults, routesForEffort: routes, ui, componentCatalog: (sessionId) => components.catalog(sessionId),
+    ...defaults, routesForEffort: routes, componentCatalog: (sessionId) => components.catalog(sessionId),
     tool: (call, resources, context, maxTasks) => agentRuntime.invokeTool("main-agent", call, resources, context, {
-      maxTasks, trace: (event) => components.trace(event),
+      maxTasks,
     }),
   });
   function providerDashboard(): ProviderDashboard {
@@ -141,7 +96,9 @@ export function createWebRuntime(options: {
     const voiceAccount = emptyAccount(voiceConfig.key ? "not_checked" : "not_configured", at);
     const configured = new Set<string>(freeFallbackModels);
     for (const effort of ["low", "medium", "high", "max"] as const) {
-      try { for (const route of Object.values(liveModelRoutes(effort))) configured.add(route.model); }
+      try { for (const route of Object.values(liveModelRoutes(effort, process.env, registry.list().map(({ definition }) => definition)))) {
+        configured.add(route.model);
+      } }
       catch { /* Invalid route settings are already reported by system(). */ }
     }
     const since = providerUsage.since();

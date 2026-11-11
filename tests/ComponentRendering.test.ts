@@ -17,19 +17,19 @@ import { createWebRuntime } from "../src/web/runtime.js";
 
 const source = (jsx: string) => "export default function Component() { return (" + jsx + "); }";
 
-test("the preview compiler accepts bounded React TSX and rejects executable or external capabilities", () => {
-  const draft = compileComponent("Expedições", source('<section><Counter label="Expedições" /><Toggle label="Revisado" /></section>'));
-  assert.match(draft.compiled, /React\.createElement\(Counter/);
-  for (const unsafe of [
-    '<img src="https://example.org" />',
-    '<section onClick="x">Unsafe</section>',
-    '<p>{fetch("/api/sessions")}</p>',
-    '<div {...globalThis} />',
-    '<section><script>window.top.location</script></section>',
-    '<a href="https://example.org">Link</a>',
-    '<Counter label={document.cookie} />',
-  ]) assert.throws(() => compileComponent("Unsafe", source(unsafe)), unsafe);
-  assert.throws(() => compileComponent("Unsafe", "import React from 'react'; " + source("<p>Hi</p>")));
+test("the preview compiler accepts ordinary TSX and rejects invalid syntax and oversized code", () => {
+  const draft = compileComponent("Dashboard", `
+    import { useState } from "react";
+    export default function Dashboard() {
+      const [points, setPoints] = useState([10, 20]);
+      return <><button onClick={() => setPoints([...points, 30])}>Adicionar</button>
+        <svg viewBox="0 0 100 100">{points.map((p, i) => <rect key={i} x={i * 10} width={8} height={p} />)}</svg></>;
+    }
+  `);
+  assert.match(draft.compiled, /useState/);
+  assert.match(draft.compiled, /createElement\("svg"/);
+  assert.throws(() => compileComponent("Invalid", "export default function ( {"));
+  assert.throws(() => compileComponent("Large", " ".repeat(160_000) + source("<p>Too large</p>")));
 });
 
 test("the model cannot use the render tool without opt-in or add capabilities", () => {
@@ -82,9 +82,12 @@ test("MainAgent delivers a versioned React window after DevAgent repairs it and 
     id: "component-test",
     async generate({ model, messages }) {
       const input = messages.at(-1)?.content ?? "";
+      if (messages[0]?.content.startsWith("VOID_UI_DESIGN")) return { model, content: JSON.stringify({
+        kind: "author", key: "expedicoes", brief: "Implemente a composição solicitada.", review: false,
+      }) };
       if (messages[0]?.content.startsWith("VOID_UI_AUTHOR")) {
         authorPrompts.push(input);
-        const code = authorPrompts.length === 1 ? source("<p>{process.env.SECRET}</p>") :
+        const code = authorPrompts.length === 1 ? "export default function ( {" :
           source(authorPrompts.length === 2 ? '<section><Counter label="Expedições" /></section>' :
             '<section><Counter label="Expedições" /><Toggle label="Revisado" /></section>');
         return { model, content: JSON.stringify({ title: "Expedições", source: code }) };
@@ -144,10 +147,9 @@ test("MainAgent delivers a versioned React window after DevAgent repairs it and 
   const db = openLocalDatabase(filename);
   try {
     const ancestry = db.prepare("SELECT child.agent_id, child.status, parent.agent_id AS parent FROM ui_agent_tasks child JOIN ui_agent_tasks parent ON parent.task_id = child.parent_task_id ORDER BY child.rowid").all();
-    assert.equal(db.prepare("SELECT failure_category FROM ui_agent_tasks WHERE agent_id = 'dev-agent' AND status = 'failed'").get()?.failure_category, "budget_exceeded");
+    assert.equal(db.prepare("SELECT failure_category FROM ui_agent_tasks WHERE agent_id = 'agent-renderer' AND status = 'failed'").get()?.failure_category, "budget_exceeded");
     assert.deepEqual(ancestry.map((row) => ({ ...row })), [
       { agent_id: "dev-agent", status: "completed", parent: "agent-renderer" },
-      { agent_id: "dev-agent", status: "failed", parent: "agent-renderer" },
       { agent_id: "dev-agent", status: "completed", parent: "agent-renderer" },
     ]);
   } finally { db.close(); }
@@ -161,14 +163,17 @@ test("a visual request recovers once at each truncated stage within its call and
       const system = messages[0]?.content ?? "";
       const prompt = messages.at(-1)?.content ?? "";
       requests.push({ system, prompt, ...(maxOutputTokens === undefined ? {} : { cap: maxOutputTokens }) });
-      if (requests.length === 1 || requests.length === 3) {
+      if (prompt !== "Quais agentes estão disponíveis?" && (requests.length === 1 || requests.length === 4)) {
         const error = new ExecutionError({ category: "incomplete", retryable: false,
           message: "Truncated", ...(requests.length === 1 ? { finishReason: "length" } : { code: "max_tokens_exceeded" }) });
         error.usage = { inputTokens: 100, outputTokens: 100 };
         throw error;
       }
-      const content = system.startsWith("VOID_UI_AUTHOR")
+      const content = system.startsWith("VOID_UI_DESIGN")
+        ? { kind: "author", key: "contador", brief: "Contador", review: false }
+        : system.startsWith("VOID_UI_AUTHOR")
         ? { title: "Contador", source: source('<section><Counter label="Contador" /></section>') }
+        : prompt === "Quais agentes estão disponíveis?" ? { mode: "direct", response: "AgentRenderer, Dev Agent, Research Agent" }
         : { mode: "tool", call: { name: "ui.render", arguments: { brief: prompt, key: "contador" } } };
       return { model, content: JSON.stringify(content), usage: { inputTokens: 100, outputTokens: 100 } };
     },
@@ -188,14 +193,15 @@ test("a visual request recovers once at each truncated stage within its call and
 
   const inventory = await run("Quais agentes estão disponíveis?", 1);
   assert.match(inventory.events.find(({ type }) => type === "final")?.text ?? "", /AgentRenderer/);
-  assert.equal(requests.length, 0);
+  assert.equal(requests.length, 1);
+  requests.length = 0;
 
-  const creation = await run("Crie uma janela com contador", 4);
+  const creation = await run("Crie uma janela com contador", 5);
   assert.equal(creation.result.kind, "direct");
   assert.equal(creation.events.find((event) => event.type === "ui")?.action.type, "open_component");
   assert.match(requests[1]?.system ?? "", /compact JSON/);
-  assert.match(requests[3]?.prompt ?? "", /previous output was truncated/);
-  assert.deepEqual(requests.map(({ cap }) => cap), [900, 768, 700, 600]);
+  assert.match(requests[4]?.prompt ?? "", /previous output was truncated/);
+  assert.deepEqual(requests.map(({ cap }) => cap), [900, 768, 700, 600, 500]);
 
   requests.length = 0;
   const exhausted = await run("Crie uma janela com contador", 2);

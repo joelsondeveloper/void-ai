@@ -13,7 +13,7 @@ export interface ConversationStore {
   recordDirect(sessionId: string, request: string, response: string, turnId?: string, model?: ServedModel, ui?: boolean): void;
   bind(sessionId: string, executionId: string, request: string, turnId?: string, introduction?: string): void;
   find(sessionId: string, executionId: string): ConversationTurn | undefined;
-  complete(sessionId: string, executionId: string, response: string): void;
+  complete(sessionId: string, executionId: string, response: string, ui?: boolean): void;
   pending(sessionId: string): string[];
 }
 
@@ -140,11 +140,11 @@ export class SQLiteConversationStore implements ConversationStore {
     return { request, response };
   }
 
-  complete(sessionId: string, executionId: string, response: string): void {
+  complete(sessionId: string, executionId: string, response: string, ui?: boolean): void {
     this.db.prepare(`
-      UPDATE conversation_turns SET response = ?, failure = NULL
+      UPDATE conversation_turns SET response = ?, failure = NULL, ui = ?
       WHERE session_id = ? AND execution_id = ? AND response IS NULL
-    `).run(response, sessionId, executionId);
+    `).run(response, ui ? 1 : 0, sessionId, executionId);
   }
 
   pending(sessionId: string): string[] {

@@ -8,11 +8,11 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { chromium } from "playwright-core";
 import { voiceTests } from "./voice-scenarios.mjs";
-import { mockInput, voiceInputTests } from "./voice-input-scenarios.mjs";
+import { voiceInputTests } from "./voice-input-scenarios.mjs";
 
-let server, liveServer, browser, directory, base;
+let server, generatedServer, generatedBase, liveServer, browser, directory, base;
 const captures = process.env.VOID_WEB_SCREENSHOTS;
-async function startServer(database, mode = "MOCK") {
+async function startServer(database, mode = "MOCK", maxCalls = 2) {
   const socket = createServer();
   socket.listen(0, "127.0.0.1");
   await once(socket, "listening");
@@ -23,7 +23,7 @@ async function startServer(database, mode = "MOCK") {
   if (mode === "LIVE") args.push("--live");
   const server = spawn(process.execPath, args, {
     env: { ...process.env, VOID_WEB_PORT: String(port), VOID_WEB_DB: database,
-      VOID_WEB_MAX_CALLS: "2", NEXT_TELEMETRY_DISABLED: "1",
+      VOID_WEB_MAX_CALLS: String(maxCalls), NEXT_TELEMETRY_DISABLED: "1",
       OPENROUTER_API_KEY: "", ELEVENLABS_API_KEY: "", VOID_ELEVENLABS_TTS: "0" },
     stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
   });
@@ -54,6 +54,7 @@ before(async () => {
   directory = mkdtempSync(join(tmpdir(), "void-browser-"));
   if (captures) mkdirSync(captures, { recursive: true });
   ({ server, base } = await startServer(join(directory, "history.sqlite")));
+  ({ server: generatedServer, base: generatedBase } = await startServer(join(directory, "generated.sqlite"), "MOCK", 5));
   const edge = "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe";
   const executablePath = process.env.VOID_BROWSER_EXECUTABLE || (process.platform === "win32" && existsSync(edge) ? edge : undefined);
   browser = await chromium.launch({ executablePath });
@@ -61,7 +62,7 @@ before(async () => {
 
 after(async () => {
   await browser?.close();
-  await Promise.all([stopServer(server), stopServer(liveServer)]);
+  await Promise.all([stopServer(server), stopServer(generatedServer), stopServer(liveServer)]);
   if (directory) rmSync(directory, { recursive: true, force: true });
 });
 
@@ -71,7 +72,11 @@ async function open(t, viewport, setup, url = base, mode = "MOCK") {
   const page = await context.newPage();
   const failures = [];
   page.on("pageerror", (error) => failures.push(error.message));
-  page.on("console", (message) => { if (message.type() === "error") failures.push(message.text()); });
+  page.on("console", (message) => {
+    if (message.type() !== "error") return;
+    if (mode === "LIVE" && message.location().url.endsWith("/messages") && message.text().includes("503")) return;
+    failures.push(message.text());
+  });
   t.after(() => assert.deepEqual(failures, [], "browser errors"));
   await setup?.(page);
   await page.goto(url);
@@ -91,7 +96,7 @@ async function command(page, text) {
 }
 
 test("Focus opens a generated React component, runs local interactions and reuses its version", async (t) => {
-  const page = await open(t, { width: 1280, height: 800 });
+  const page = await open(t, { width: 1280, height: 800 }, undefined, generatedBase);
   const waitForPreview = () => page.waitForResponse((response) => /\/components\/[a-f0-9]{64}\/1$/.test(response.url()));
   const initialPreview = waitForPreview();
   await command(page, "Crie uma interface com um contador de expedições e um checklist de equipamentos");
@@ -109,8 +114,8 @@ test("Focus opens a generated React component, runs local interactions and reuse
   await frame.getByRole("button", { name: "Expedições: aumentar" }).click();
   await frame.getByText("1", { exact: true }).waitFor();
   const check = frame.getByRole("checkbox", { name: "Equipamento conferido" });
-  await check.check();
-  assert.equal(await check.isChecked(), true);
+  await check.click();
+  await frame.locator("input[type=checkbox]:checked").waitFor();
   assert.equal(await frame.locator("body").evaluate(() => self.origin), "null");
   if (captures) await page.screenshot({ path: join(captures, "void-generated-focus.png") });
   await check.press("Escape");
@@ -122,7 +127,7 @@ test("Focus opens a generated React component, runs local interactions and reuse
 });
 
 test("Focus · cria uma janela com contador e reabre o componente salvo", async (t) => {
-  const page = await open(t, { width: 1200, height: 800 });
+  const page = await open(t, { width: 1200, height: 800 }, undefined, generatedBase);
   await command(page, "Crie uma janela com contador");
   const dialog = page.getByRole("dialog", { name: "Contador", exact: true });
   const iframe = dialog.locator("iframe");
@@ -241,7 +246,7 @@ test("desktop · direct answer, staged progress, approval after reload, and orig
   await field.fill("Analise a função TypeScript e compare alternativas.");
   await field.press("Enter");
   await page.locator('.singularity[data-state="processing"]').waitFor();
-  await conversation.getByText(/Vou examinar a parte técnica/).waitFor();
+  await conversation.getByText(/Vou encaminhar a análise para Dev Agent, Research Agent/).waitFor();
   await conversation.getByText("Já recebi um resultado da análise.").waitFor();
   assert.equal(await conversation.getByText(/dev-agent iniciou a etapa/).count(), 0);
   assert.equal(await conversation.locator(".assistant-message").count(), 2);
@@ -255,7 +260,7 @@ test("desktop · direct answer, staged progress, approval after reload, and orig
 
   await page.reload();
   await enterWorkspace(page);
-  await conversation.getByText(/Vou examinar a parte técnica/).waitFor();
+  await conversation.getByText(/Vou encaminhar a análise para Dev Agent, Research Agent/).waitFor();
   await workspace.getByRole("button", { name: "Autorizar e retomar" }).click();
   await conversation.getByText(/Comparação simulada/).waitFor();
   await page.locator('.singularity[data-state="completed"]').waitFor();
@@ -382,38 +387,13 @@ test("Focus · narrow viewport clamps the window and renders the validated displ
   assert.equal(await display.count(), 0);
 });
 
-test("Focus · text and recognized voice open real windows with LIVE models unavailable", { timeout: 45_000 }, async (t) => {
+test("LIVE without a provider rejects semantic chat dispatch", { timeout: 45_000 }, async (t) => {
   const live = await startServer(join(directory, "live.sqlite"), "LIVE");
   liveServer = live.server;
-  const sent = [];
-  const page = await open(t, { width: 1200, height: 800 }, async (page) => {
-    page.on("request", (request) => {
-      if (request.method() === "POST" && request.url().endsWith("/messages")) sent.push(request.postDataJSON());
-    });
-    await page.addInitScript(mockInput);
-    await page.addInitScript(() => localStorage.setItem("void:voice-pause", "0.5"));
-  }, live.base, "LIVE");
-  await command(page, "Quais agentes estão disponíveis?");
-  await page.locator(".command-overlay").waitFor({ state: "hidden" });
-  await page.keyboard.press("Control+k");
-  await page.getByText("Última resposta", { exact: true }).click();
-  await page.getByText(/Agentes disponíveis:.*AgentRenderer/).waitFor();
-  await command(page, "abra configurações");
-  const settings = page.getByRole("dialog", { name: "Configurações" });
-  await settings.getByLabel("Esforço").waitFor();
-  await page.keyboard.press("Escape");
-  await page.keyboard.press("Control+k");
-  await page.clock.install();
-  await page.getByRole("button", { name: "Clique para falar" }).click();
-  await page.getByText("Escutando · fale agora", { exact: true }).waitFor();
-  await page.evaluate(() => Object.assign(window.inputMock, { pending: "Abra o painel de uso", level: 0.1 }));
-  await page.clock.runFor(160);
-  await page.evaluate(() => { window.inputMock.level = 0; });
-  await page.clock.runFor(600);
-  const usage = page.getByRole("dialog", { name: "Uso e limites" });
-  await usage.getByRole("article", { name: "OpenRouter" }).waitFor();
-  assert.deepEqual(sent.map(({ message, source }) => [message, source]), [
-    ["Quais agentes estão disponíveis?", undefined], ["abra configurações", undefined], ["Abra o painel de uso", "voice"],
-  ]);
-  if (captures) await page.screenshot({ path: join(captures, "void-live-usage.png") });
+  const page = await open(t, { width: 1200, height: 800 }, undefined, live.base, "LIVE");
+  const unavailable = page.waitForResponse(response => response.request().method() === "POST" &&
+    response.url().endsWith("/messages"));
+  await command(page, "Abra as configurações.");
+  assert.equal((await unavailable).status(), 503);
+  assert.equal(await page.getByRole("dialog", { name: "Configurações" }).count(), 0);
 });

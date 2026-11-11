@@ -119,10 +119,11 @@ const initialLimits = !demo && !benchmark && process.env.VOID_CHAT_MAX_CALLS !==
   ? { calls: Number(process.env.VOID_CHAT_MAX_CALLS) } : {};
 const resolved = resolveEffort(effort, initialLimits);
 function routesForEffort(level: typeof resolved.effort): ModelRoutes {
-  if (live) return liveModelRoutes(level);
+  if (live) return liveModelRoutes(level, process.env, registry.list().map(({ definition }) => definition));
   const route = (model: string) => ({ providerId: local.id, model, maxOutputTokens: 1600 });
   return { decision: route("main-local"), synthesis: route("main-local"),
-    "dev-agent": route("dev-local"), "research-agent": route("research-local") };
+    ...Object.fromEntries(registry.list().flatMap(({ definition: { id, model } }) =>
+      model ? [[id, route(model.configKey.toLowerCase() + "-local")]] : [])) };
 }
 const selectedRoutes = routesForEffort(resolved.effort);
 const filename = demo || benchmark || promptFile ? ":memory:" : process.env.VOID_CHAT_DB ??

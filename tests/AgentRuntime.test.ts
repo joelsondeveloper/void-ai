@@ -80,7 +80,8 @@ test("should execute a task successfully", async () => {
   assert.equal(requests.length, 1);
   assert.deepEqual(requests[0]?.messages.map(({ role }) => role), ["system", "user"]);
   assert.deepEqual(requests[0]?.messages[1], { role: "user", content: task.objective });
-  assert.equal(requests[0]?.signal, context.signal);
+  assert.ok(requests[0]?.signal);
+  assert.equal(requests[0]?.signal?.aborted, true, "task-local signal closes after execution");
 });
 
 test("should fail when agent does not exist", async () => {
@@ -221,8 +222,10 @@ test("should preserve each context and isolate an asynchronous agent failure", a
     const success = await pendingSuccess;
     assert.equal(failingTask.status, "running");
     assert.equal(successfulTask.status, "completed");
-    assert.equal(observedContexts.get(failingTask.id), failingContext);
-    assert.equal(observedContexts.get(successfulTask.id), successfulContext);
+    assert.equal(observedContexts.get(failingTask.id)?.executionId, failingContext.executionId);
+    assert.deepEqual(observedContexts.get(failingTask.id)?.permissions, failingContext.permissions);
+    assert.equal(observedContexts.get(successfulTask.id)?.executionId, successfulContext.executionId);
+    assert.deepEqual(observedContexts.get(successfulTask.id)?.metadata, successfulContext.metadata);
     assert.equal(success.status, "completed");
     assert.equal(success.taskId, successfulTask.id);
     assert.equal(success.agentId, successfulTask.agentId);

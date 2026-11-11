@@ -14,7 +14,13 @@ export const freeModelIds = {
 
 export const freeFallbackModels = [freeModelIds.superVl, freeModelIds.dots, freeModelIds.gemma] as const;
 
-const keys = ["decision", "synthesis", "dev-agent", "research-agent"] as const;
+type AgentRouteDefinition = { id: string; model?: { configKey: string; fallback: string } };
+
+// Defaults for standalone callers that do not supply a channel registry.
+const standaloneAgents = [
+  { id: "dev-agent", model: { configKey: "DEV", fallback: freeModelIds.north } },
+  { id: "research-agent", model: { configKey: "RESEARCH", fallback: freeModelIds.ultra } },
+];
 
 export function isModelLabel(value: unknown): value is string {
   return typeof value === "string" && /^[a-z0-9_.:-]+(?:\/[a-z0-9_.:-]+)?$/i.test(value) && value.length <= 160;
@@ -35,10 +41,11 @@ function isRoute(value: unknown): value is ModelRoute {
 export function isModelRoutes(value: unknown): value is ModelRoutes {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const routes = value as Record<string, unknown>;
-  return Object.keys(routes).length === keys.length && keys.every((key) => isRoute(routes[key]));
+  return isRoute(routes.decision) && isRoute(routes.synthesis) &&
+    Object.entries(routes).every(([key, value]) => isModelLabel(key) && isRoute(value));
 }
 
-export function selectOpenRouterRoutes(effort: ExplicitEffort, env: NodeJS.ProcessEnv): ModelRoutes {
+export function selectOpenRouterRoutes(effort: ExplicitEffort, env: NodeJS.ProcessEnv, agents: readonly AgentRouteDefinition[] = standaloneAgents): ModelRoutes {
   if (!["low", "medium", "high", "max"].includes(effort)) throw new Error("Nível de esforço inválido.");
   const route = (role: string, fallback: string): ModelRoute => {
     const config = (field: string) => env[`VOID_${role}_${field}_${effort.toUpperCase()}`] ??
@@ -77,13 +84,13 @@ export function selectOpenRouterRoutes(effort: ExplicitEffort, env: NodeJS.Proce
   return {
     decision,
     synthesis: route("SYNTHESIS", freeModelIds.superVl),
-    "dev-agent": route("DEV", freeModelIds.north),
-    "research-agent": route("RESEARCH", freeModelIds.ultra),
+    ...Object.fromEntries(agents.flatMap(({ id, model }) => model
+      ? [[id, route(model.configKey, model.fallback)]] : [])),
   };
 }
 
-export function liveModelRoutes(effort: ExplicitEffort, env: NodeJS.ProcessEnv = process.env): ModelRoutes {
-  const routes = selectOpenRouterRoutes(effort, env);
+export function liveModelRoutes(effort: ExplicitEffort, env: NodeJS.ProcessEnv = process.env, agents?: readonly AgentRouteDefinition[]): ModelRoutes {
+  const routes = selectOpenRouterRoutes(effort, env, agents);
   for (const [role, route] of Object.entries(routes)) {
     if (!isFreeOpenRouterRoute(route.model)) {
       throw new Error(`A rota ${role} deve selecionar openrouter/free ou um modelo :free.`);

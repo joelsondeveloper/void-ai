@@ -380,7 +380,7 @@ test("web streams the initial reply and progress before completion, then survive
   t.after(reconnect.close);
   const restored = await reconnect.until((state) => !!state.turns[0]?.response);
   assert.equal(restored.state.turns.length, 1);
-  assert.match(restored.state.turns[0]?.introduction ?? "", /^Vou revisar/);
+  assert.match(restored.state.turns[0]?.introduction ?? "", /^Vou encaminhar a análise para Dev Agent/);
   assert.match(restored.state.turns[0]?.response ?? "", /Verified output/);
   assert.equal(restored.state.executions[0]?.status, "completed");
 });
@@ -685,8 +685,10 @@ for (const effort of ["auto", "medium"] as const) {
   });
 }
 
-test("UI commands use the existing message route without an available model and keep events session-scoped", async (t) => {
-  const api = await serve(createWebRuntime({ filename: ":memory:", live: true }));
+test("Semantic UI commands use the existing message route and keep events session-scoped", async (t) => {
+  const api = await serve(createWebRuntime({ filename: ":memory:", mock: { id: "fixture", async generate({ model }) {
+    return { model, content: JSON.stringify({ mode: "tool", call: { name: "ui.openWindow", arguments: { component: "usage" } } }) };
+  } } }));
   t.after(api.close);
   const path = await api.session();
   const other = await api.session();
@@ -697,23 +699,25 @@ test("UI commands use the existing message route without an available model and 
   assert.equal((await api.post(path + "/messages", input)).status, 202);
   const { state } = await stream.until(({ active, ui }) => !active && ui?.turnId === input.id);
   assert.deepEqual(state.ui?.action, { type: "open_panel", panel: "usage" });
-  assert.equal(state.turns[0]?.model, null);
+  assert.equal(state.turns[0]?.model, "main-local");
   assert.equal((await api.post(path + "/messages", input)).status, 202);
   const replay = await api.waitFor(path, ({ active }) => !active);
   assert.equal(replay.turns.length, 1);
   assert.deepEqual(replay.ui, state.ui);
   const otherState: Snapshot = await (await api.get(other)).json();
   assert.equal(otherState.ui, undefined);
-  assert.equal((await api.post(path + "/messages", message("O que é workspace?"))).status, 503);
+
 });
 
 test("MainAgent validates display schemas and routes them through the registered renderer", async (t) => {
   const schema = { title: "Custos", blocks: [{ kind: "card", title: "Total", value: 12 }] };
   let calls = 0;
   const api = await serve(createWebRuntime({ filename: ":memory:", mock: { id: "web-demo",
-    async generate({ model }) {
+    async generate({ model, messages }) {
       calls++;
-      return { model, content: JSON.stringify({ mode: "display", schema }) };
+      const input = messages.at(-1)?.content ?? "";
+      return { model, content: JSON.stringify({ mode: "display", schema: input.startsWith("Exibir ")
+        ? { ...schema, html: "<script>alert(1)</script>" } : schema }) };
     },
   } }));
   t.after(api.close);
@@ -722,12 +726,12 @@ test("MainAgent validates display schemas and routes them through the registered
   assert.equal((await api.post(path + "/messages", invalid)).status, 202);
   const rejectedSchema = await api.waitFor(path, ({ active, turns }) => !active && turns.length === 1);
   assert.equal(rejectedSchema.ui, undefined);
-  assert.equal(calls, 0);
+  assert.equal(calls, 1);
   const valid = message("Crie um cartão com o total de 12.");
   assert.equal((await api.post(path + "/messages", valid)).status, 202);
   const accepted = await api.waitFor(path, ({ active, turns }) => !active && turns.length === 2);
   assert.deepEqual(accepted.ui, { turnId: valid.id, action: { type: "update_panel", panel: "display", schema } });
-  assert.equal(calls, 1);
+  assert.equal(calls, 2);
   const ordinary = message("Organize esses dados visualmente para mim.");
   assert.equal((await api.post(path + "/messages", ordinary)).status, 202);
   const rejectedDecision = await api.waitFor(path, ({ active, turns }) => !active && turns.length === 3);

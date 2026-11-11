@@ -85,7 +85,9 @@ export class ComponentRegistry {
 
   trace(event: AgentTaskEvent) {
     if (event.status === "running") {
-      this.db.prepare(`INSERT INTO ui_agent_tasks (task_id, execution_id, parent_task_id, caller, agent_id, capability, status, started_at, finished_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`).run(
+      this.db.prepare(`INSERT INTO ui_agent_tasks (task_id, execution_id, parent_task_id, caller, agent_id, capability, status, started_at, finished_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
+        ON CONFLICT(task_id) DO UPDATE SET status = excluded.status, started_at = excluded.started_at,
+          finished_at = NULL, failure_category = NULL`).run(
         event.taskId, event.executionId, event.parentTaskId, event.caller, event.agentId, event.capability, event.status, event.at);
     } else {
       this.db.prepare("UPDATE ui_agent_tasks SET status = ?, finished_at = ?, failure_category = ? WHERE task_id = ?")

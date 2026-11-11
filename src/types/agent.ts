@@ -1,10 +1,12 @@
 import type { AgentTask } from "./task.js";
-import type { AgentContext } from "./context.js";
+import type { AgentInvocation } from "../runtime/AgentOperation.js";
+import type { UiAction } from "../web/ui-contracts.js";
 
 export type AgentStatus = "enabled" | "disabled";
 
 export interface AgentOutput {
     content: string;
+    action?: UiAction;
 }
 
 export interface AgentDefinition {
@@ -12,6 +14,7 @@ export interface AgentDefinition {
     name: string;
     description: string;
     capabilities: string[];
+    model?: { configKey: string; fallback: string };
 }
 
 export interface AgentIdentity {
@@ -19,5 +22,5 @@ export interface AgentIdentity {
 }
 
 export interface ExecutableAgent extends AgentIdentity {
-    execute(task: AgentTask, context: AgentContext): Promise<AgentOutput>;
+    execute(task: AgentTask, context: AgentInvocation): Promise<AgentOutput>;
 }

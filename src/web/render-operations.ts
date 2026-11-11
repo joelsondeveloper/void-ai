@@ -1,24 +1,22 @@
 import { uiTools } from "./ui-runtime.js";
-import { AgentOperation } from "../runtime/AgentOperation.js";
+import { AgentOperation, type AgentGeneration } from "../runtime/AgentOperation.js";
 import { isLocalUiToolCall, isRenderToolCall, type UiAction, type LocalUiToolCall } from "./ui-contracts.js";
-import { authorCapability, renderCapability, type GeneratedWindow, type RenderRequest } from "./render-contracts.js";
+import { authorCapability, renderCapability, type ComponentDraft, type RenderRequest } from "./render-contracts.js";
 
-export type GenerateComponent = (instructions: string, prompt: string, signal: AbortSignal) => Promise<string>;
+export type GenerateComponent = AgentGeneration;
 
 export interface AuthorComponentRequest {
   brief: string;
-  sessionId: string;
-  key: string;
   previousSource?: string;
-  generate: GenerateComponent;
+  generate?: GenerateComponent;
 }
 
 export type RenderInvocation = (RenderRequest | { builtin: LocalUiToolCall }) & {
   sessionId: string;
-  generate: GenerateComponent;
+  generate?: GenerateComponent;
 };
 
-export type RenderedWindow = { response: string; action: UiAction };
+export type RenderedWindow = { response: string; action?: UiAction };
 
 export const renderWindow = new AgentOperation<RenderInvocation, RenderedWindow>("agent-renderer", renderCapability, uiTools.map(tool => ({ ...tool,
   prepare: (value, resources): RenderInvocation => {
@@ -28,4 +26,4 @@ export const renderWindow = new AgentOperation<RenderInvocation, RenderedWindow>
   },
 })));
 
-export const authorComponent = new AgentOperation<AuthorComponentRequest, GeneratedWindow>("dev-agent", authorCapability);
+export const authorComponent = new AgentOperation<AuthorComponentRequest, ComponentDraft>("dev-agent", authorCapability);

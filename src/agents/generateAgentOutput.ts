@@ -1,4 +1,6 @@
 import type { ModelRouter } from "../models/ModelRouter.js";
+import type { AgentContext } from "../types/context.js";
+import type { AgentGeneration } from "../runtime/AgentOperation.js";
 import type { AgentOutput } from "../types/agent.js";
 import type { ModelReasoning } from "../types/model.js";
 
@@ -57,4 +59,21 @@ export async function generateAgentOutput(
     throw new Error("Model provider returned empty content.");
   }
   return { content };
+}
+
+export async function generateAgentJson(
+  router: ModelRouter, fallback: AgentModelConfig, agentId: string, context: AgentContext,
+  instructions: string, prompt: string, maxOutputTokens: number, generate?: AgentGeneration,
+): Promise<string> {
+  if (generate) return generate(agentId, instructions, prompt, context.signal, maxOutputTokens);
+  const route = context.modelRoute ?? fallback;
+  const response = await router.generate(route.providerId, {
+    model: route.model, responseFormat: "json_object", maxOutputTokens: route.maxOutputTokens ?? maxOutputTokens,
+    ...(route.reasoning ? { reasoning: route.reasoning } : {}),
+    ...(route.temperature === undefined ? {} : { temperature: route.temperature }),
+    messages: [{ role: "system", content: instructions }, { role: "user", content: prompt }],
+    signal: context.signal,
+  });
+  context.signal.throwIfAborted();
+  return response.content;
 }

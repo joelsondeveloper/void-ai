@@ -3,6 +3,7 @@ import { validateLimits } from "./effort.js";
 import type { PlanStep, PlanStepExecution } from "../types/plan.js";
 import { failureCategories } from "../types/failure.js";
 import type { ModelRoutes, ServedModel } from "../types/model.js";
+import { isUiAction } from "../web/ui-contracts.js";
 import { isModelLabel, isModelRoutes } from "../models/modelSelection.js";
 
 export type RunStatus = "pending" | "running" | "pausing" | "paused" | "awaiting_approval"
@@ -111,7 +112,7 @@ export function decodeCheckpoint(json: string): ExecutionCheckpoint {
       raw.servedModels.every((model: unknown) => record(model) &&
         Object.keys(model).every((key) => ["providerId", "requested", "returned", "role", "stepId"].includes(key)) &&
         isModelLabel(model.providerId) && isModelLabel(model.requested) && isModelLabel(model.returned) &&
-        typeof model.role === "string" && ["decision", "synthesis", "dev-agent", "research-agent", "specialist"].includes(model.role) &&
+        isModelLabel(model.role) &&
         (model.stepId === undefined || typeof model.stepId === "string")));
   }
   const usage = raw.usage;
@@ -143,6 +144,7 @@ export function decodeCheckpoint(json: string): ExecutionCheckpoint {
       (state.error === null || typeof state.error === "string") &&
       (state.startedAt === null || date(state.startedAt)) &&
       (state.finishedAt === null || date(state.finishedAt)));
+    requireValid(state.action === undefined || (state.status === "completed" && isUiAction(state.action)));
     if (state.status === "running") active++;
     if (state.status === "pending" || state.status === "running") {
       requireValid(state.finishedAt === null && state.output === null && state.error === null &&

@@ -1,3 +1,4 @@
+import { freeModelIds } from "../models/modelSelection.js";
 import type { ModelRouter } from "../models/ModelRouter.js";
 import type { AgentDefinition, AgentOutput, ExecutableAgent } from "../types/agent.js";
 import type { AgentContext } from "../types/context.js";
@@ -22,6 +23,7 @@ export class ResearchAgent implements ExecutableAgent {
   readonly definition: AgentDefinition = {
     id: "research-agent",
     name: "Research Agent",
+    model: { configKey: "RESEARCH", fallback: freeModelIds.ultra },
     description: "Investigation and synthesis of available evidence",
     capabilities: ["evidence-synthesis", "comparative-analysis", "knowledge-gap-analysis"],
   };

@@ -45,9 +45,9 @@ test("free routing follows each effort and auto resolves conservatively", () => 
     const routes = liveModelRoutes(level, {});
     assert.equal(routes.decision.model, general);
     assert.equal(routes.synthesis.model, freeModelIds.superVl);
-    assert.equal(routes["research-agent"].model, freeModelIds.ultra);
-    assert.deepEqual(routes["research-agent"].reasoning, { effort: "none" });
-    assert.equal(routes["dev-agent"].model, freeModelIds.north);
+    assert.equal(routes["research-agent"]?.model, freeModelIds.ultra);
+    assert.deepEqual(routes["research-agent"]?.reasoning, { effort: "none" });
+    assert.equal(routes["dev-agent"]?.model, freeModelIds.north);
     assert.equal(resolveEffort(level).limits.calls, calls);
   }
   const auto = liveModelRoutes(resolveEffort("auto").effort, {}).decision;
@@ -61,23 +61,23 @@ test("per-role, per-effort overrides stay isolated and reject unsafe configurati
   const env = { VOID_DEV_MODEL: "vendor/general:free", VOID_DEV_MODEL_HIGH: "vendor/high:free",
     VOID_DEV_MAX_OUTPUT_TOKENS_HIGH: "2345", VOID_SYNTHESIS_MODEL_HIGH: "openrouter/free" };
   const high = liveModelRoutes("high", env);
-  assert.equal(high["dev-agent"].model, "vendor/high:free");
-  assert.equal(high["dev-agent"].maxOutputTokens, 2345);
+  assert.equal(high["dev-agent"]?.model, "vendor/high:free");
+  assert.equal(high["dev-agent"]?.maxOutputTokens, 2345);
   assert.equal(high.decision.model, freeModelIds.superVl);
   assert.equal(high.synthesis.model, "openrouter/free");
-  assert.equal(high["research-agent"].model, freeModelIds.ultra);
-  assert.equal(liveModelRoutes("low", env)["dev-agent"].model, "vendor/general:free");
-  assert.equal(liveModelRoutes("low", { VOID_RESEARCH_MODEL: freeModelIds.dots })["research-agent"].reasoning, undefined);
-  assert.equal(liveModelRoutes("medium", { VOID_RESEARCH_REASONING_EFFORT: "default" })["research-agent"].reasoning, undefined);
+  assert.equal(high["research-agent"]?.model, freeModelIds.ultra);
+  assert.equal(liveModelRoutes("low", env)["dev-agent"]?.model, "vendor/general:free");
+  assert.equal(liveModelRoutes("low", { VOID_RESEARCH_MODEL: freeModelIds.dots })["research-agent"]?.reasoning, undefined);
+  assert.equal(liveModelRoutes("medium", { VOID_RESEARCH_REASONING_EFFORT: "default" })["research-agent"]?.reasoning, undefined);
   assert.throws(() => liveModelRoutes("high", { VOID_MAIN_MODEL: "vendor/paid" }), /modelo :free/);
   assert.throws(() => liveModelRoutes("low", { VOID_DEV_MAX_OUTPUT_TOKENS: "1.5" }), /inteiro/);
 });
 
 test("selection can describe a paid model while the active cost policy rejects it", () => {
   const selected = selectOpenRouterRoutes("low", { VOID_DEV_MODEL: "vendor/paid" });
-  assert.equal(selected["dev-agent"].model, "vendor/paid");
+  assert.equal(selected["dev-agent"]?.model, "vendor/paid");
   const policy = freeOnlyAuthorization(["trusted-local", "openrouter"]);
-  assert.equal(policy.permits("openrouter", selected["dev-agent"].model), false);
+  assert.equal(policy.permits("openrouter", selected["dev-agent"]?.model ?? ""), false);
   assert.equal(policy.permits("trusted-local", "local-model"), true);
   assert.equal(policy.permits("untrusted-provider", "model:free"), false);
   assert.throws(() => liveModelRoutes("low", { VOID_DEV_MODEL: "vendor/paid" }), /modelo :free/);

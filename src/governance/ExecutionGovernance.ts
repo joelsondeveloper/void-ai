@@ -28,6 +28,8 @@ export interface PlanningUsage {
   elapsedMs: number;
   usage?: ModelUsage;
   servedModel?: ServedModel;
+  failedAttempts?: number;
+  failedOutputTokens?: number;
 }
 
 export interface StartExecution extends ExecutionObserver {
@@ -119,7 +121,8 @@ export class ExecutionGovernance {
     const { effort, limits } = this.effortLimits(input.effort, input.limits);
     const usage = emptyUsage();
     if (input.planning) {
-      usage.callsStarted = 1;
+      usage.callsFailed = input.planning.failedAttempts ?? 0;
+      usage.callsStarted = 1 + usage.callsFailed;
       usage.callsCompleted = 1;
       usage.elapsedMs = input.planning.elapsedMs;
       const metrics = input.planning.usage;
@@ -128,6 +131,7 @@ export class ExecutionGovernance {
         usage.outputTokens = metrics.outputTokens;
         usage.reasoningTokens = metrics.reasoningTokens ?? 0;
       } else usage.unknownUsageCalls = 1;
+      usage.outputTokens += input.planning.failedOutputTokens ?? 0;
     }
     const at = new Date().toISOString();
     const checkpoint: ExecutionCheckpoint = {
