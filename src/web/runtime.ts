@@ -85,6 +85,9 @@ export function createWebRuntime(options: {
     trustedLocalProviders: options.live ? [] : [local.id],
   });
   const main = new MainAgent(router, registry, governance, conversations, {
+    // The live server talks in free text with tool calling by default. VOID_CONVERSATION_MODE=decision restores the
+    // strict-JSON coordinator. MOCK keeps the coordinator because its local provider only understands that format.
+    ...(options.live && !process.env.VOID_CONVERSATION_MODE ? { conversationMode: "tools" as const } : {}),
     ...defaults, routesForEffort: routes, componentCatalog: (sessionId) => components.catalog(sessionId),
     specialist: (task, context, maxDelegations) => agentRuntime.execute(task, context, maxDelegations),
     tool: (call, resources, context, maxTasks) => agentRuntime.invokeTool("main-agent", call, resources, context, {

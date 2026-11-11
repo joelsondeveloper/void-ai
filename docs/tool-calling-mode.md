@@ -4,12 +4,14 @@ O MainAgent tem dois modos de conversa. O padrão continua sendo o coordenador e
 
 ## Como ativar
 
+No **modo LIVE** o modo `tools` já é o padrão. Basta rodar o comando de sempre:
+
 ```bash
-VOID_CONVERSATION_MODE=tools npm run chat:void:live
-VOID_CONVERSATION_MODE=tools npm run dev:web:live
+npm run dev:web:live        # Windows: npm.cmd run dev:web:live
+npm run chat:void:live      # terminal
 ```
 
-Em integrações TypeScript, a opção `conversationMode: "tools"` do MainAgent tem precedência sobre a variável. Sem nenhuma das duas, nada muda. No modo `tools` a persona padrão passa a ser `void-v2` e a janela de histórico, 10 turnos de até 6.000 caracteres (`historyTurns` ainda tem precedência). `VOID_PERSONA` continua valendo.
+Para voltar ao coordenador JSON, defina `VOID_CONVERSATION_MODE=decision`. O modo MOCK, o benchmark e o `MainAgent` usado diretamente em código continuam em `decision`, porque o simulador local só entende esse formato. Em integrações TypeScript, a opção `conversationMode` do MainAgent tem precedência sobre a variável. No modo `tools` a persona padrão passa a ser `void-v2` e a janela de histórico, 10 turnos de até 6.000 caracteres (`historyTurns` ainda tem precedência). `VOID_PERSONA` continua valendo.
 
 ## Fluxo de um turno
 
@@ -42,7 +44,7 @@ O limite de chamadas do esforço (`low` = 5) vale para o turno todo: conversa, e
 
 ## Fallback
 
-Se o catálogo do OpenRouter não listar `tools` em `supported_parameters` do modelo, o provider falha com o código `tools_unsupported` antes de enviar qualquer requisição. Uma recusa do endpoint já durante a chamada (HTTP 4xx/5xx) não é tratada como falta de suporte e segue como falha comum. O MainAgent então responde pelo caminho antigo (`decision`), sem que o usuário veja o erro. Qualquer outra falha é reportada normalmente.
+Se o catálogo do OpenRouter não listar `tools` em `supported_parameters` do modelo, o provider falha com o código `tools_unsupported` antes de enviar qualquer requisição. O terminal mostra uma vez por modelo a linha `VOID: o modelo ... não suporta tools; usando o coordenador JSON`. Uma recusa do endpoint já durante a chamada (HTTP 4xx/5xx) não é tratada como falta de suporte e segue como falha comum. O MainAgent então responde pelo caminho antigo (`decision`), sem que o usuário veja o erro. Qualquer outra falha é reportada normalmente.
 
 ## Voz
 

@@ -150,7 +150,8 @@ test("the per-turn call budget reserves the last call for the answer and disable
   assert.match(requests[1]?.messages.at(-1)?.content ?? "", /^Erro: O limite de chamadas deste turno acabou/);
 });
 
-test("a model without tool support falls back to the strict-JSON coordinator", async (t) => {
+test("a model without tool support falls back to the strict-JSON coordinator and says so once", async (t) => {
+  const warn = t.mock.method(console, "warn", () => {});
   const { main, requests } = fixture(t, (request) => {
     if (request.tools) throw new ExecutionError({ category: "permission_denied", code: "tools_unsupported",
       message: "Sem suporte a ferramentas.", retryable: false });
@@ -162,6 +163,9 @@ test("a model without tool support falls back to the strict-JSON coordinator", a
   assert.equal(requests.length, 2);
   assert.equal(requests[1]?.responseFormat, "json_object");
   assert.match(requests[1]?.messages[0]?.content ?? "", /^VOID_DECISION/);
+  await ask(main, "de novo");
+  assert.equal(warn.mock.callCount(), 1);
+  assert.match(String(warn.mock.calls[0]?.arguments[0]), /o modelo main não suporta tools/);
 });
 
 test("other model failures are reported, not silently retried on the old path", async (t) => {

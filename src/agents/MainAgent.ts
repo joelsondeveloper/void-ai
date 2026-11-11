@@ -106,6 +106,7 @@ export class MainAgent {
   private readonly options: MainAgentOptions;
   private readonly persona: ReturnType<typeof resolvePersona>;
   private readonly mode: ConversationMode;
+  private readonly warnedModels = new Set<string>();
 
   constructor(
     private readonly router: ModelRouter,
@@ -150,6 +151,12 @@ export class MainAgent {
         } catch (error) {
           // The model cannot take tools. Nothing was shown yet, so the strict-JSON path can still answer.
           if (describeFailure(error).code !== "tools_unsupported") throw error;
+          // Never fall back silently: without this line the new mode would look like it does nothing.
+          if (!this.warnedModels.has(decisionRoute.model)) {
+            this.warnedModels.add(decisionRoute.model);
+            console.warn(`VOID: o modelo ${decisionRoute.model} não suporta tools; usando o coordenador JSON. ` +
+              "Defina VOID_MAIN_MODEL com um modelo que liste tools no catálogo do OpenRouter.");
+          }
         }
       }
       const catalog = this.agents.catalog("main-agent", input.context.permissions);
