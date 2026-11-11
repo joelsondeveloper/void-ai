@@ -4,6 +4,7 @@ import { AgentRenderer } from "../agents/AgentRenderer.js";
 import { DevAgent } from "../agents/DevAgent.js";
 import { ResearchAgent } from "../agents/ResearchAgent.js";
 import { SQLiteConversationStore } from "../conversation/ConversationStore.js";
+import { SQLiteMemoryStore } from "../conversation/MemoryStore.js";
 import { SQLiteCheckpointStore } from "../governance/CheckpointStore.js";
 import { ExecutionGovernance } from "../governance/ExecutionGovernance.js";
 import { resolveEffort, type ExplicitEffort } from "../governance/effort.js";
@@ -80,6 +81,8 @@ export function createWebRuntime(options: {
   const permissions = registry.capabilities();
   permissions.add(previewPermission);
   const conversations = new SQLiteConversationStore(options.filename);
+  // The user's memory: local to this host, in the same SQLite file, plain text. Only the "tools" mode reads it.
+  const memory = new SQLiteMemoryStore(options.filename);
   const checkpoints = new SQLiteCheckpointStore(options.filename);
   const governance = new ExecutionGovernance(agentRuntime, checkpoints, {
     trustedLocalProviders: options.live ? [] : [local.id],
@@ -88,7 +91,7 @@ export function createWebRuntime(options: {
     // The live server talks in free text with tool calling by default. VOID_CONVERSATION_MODE=decision restores the
     // strict-JSON coordinator. MOCK keeps the coordinator because its local provider only understands that format.
     ...(options.live && !process.env.VOID_CONVERSATION_MODE ? { conversationMode: "tools" as const } : {}),
-    ...defaults, routesForEffort: routes, componentCatalog: (sessionId) => components.catalog(sessionId),
+    ...defaults, routesForEffort: routes, componentCatalog: (sessionId) => components.catalog(sessionId), memory,
     specialist: (task, context, maxDelegations) => agentRuntime.execute(task, context, maxDelegations),
     tool: (call, resources, context, maxTasks) => agentRuntime.invokeTool("main-agent", call, resources, context, {
       maxTasks,
@@ -120,7 +123,7 @@ export function createWebRuntime(options: {
     };
   }
   return {
-    main, ui, conversations, components, permissions, limits, live: !!options.live, available: !!provider,
+    main, ui, conversations, memory, components, permissions, limits, live: !!options.live, available: !!provider,
     usage: () => ({ mode: "observe", windows: usage?.snapshot() ?? [] }),
     voice,
     providerDashboard,
@@ -143,7 +146,7 @@ export function createWebRuntime(options: {
           models: null, effort, demoCap: null };
       }
     },
-    close() { conversations.close(); checkpoints.close(); usage?.close(); providerUsage.close(); components.close(); },
+    close() { conversations.close(); memory.close(); checkpoints.close(); usage?.close(); providerUsage.close(); components.close(); },
   };
 }
 

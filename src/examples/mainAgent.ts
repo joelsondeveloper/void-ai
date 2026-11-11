@@ -5,6 +5,8 @@ import { DevAgent } from "../agents/DevAgent.js";
 import { MainAgent, type MainMessage, type MainResult } from "../agents/MainAgent.js";
 import { ResearchAgent } from "../agents/ResearchAgent.js";
 import { SQLiteConversationStore } from "../conversation/ConversationStore.js";
+import { memoryCommand } from "../conversation/memoryCommands.js";
+import { SQLiteMemoryStore } from "../conversation/MemoryStore.js";
 import { SQLiteCheckpointStore } from "../governance/CheckpointStore.js";
 import { ExecutionGovernance } from "../governance/ExecutionGovernance.js";
 import type { Extension } from "../governance/checkpoint.js";
@@ -131,12 +133,14 @@ const filename = demo || benchmark || promptFile ? ":memory:" : process.env.VOID
 const sessionId = demo ? "demo" : process.env.VOID_CHAT_SESSION ?? "terminal";
 const checkpoints = new SQLiteCheckpointStore(filename);
 const conversations = new SQLiteConversationStore(filename);
+// Persistent memory for the tools mode. Same file as the conversation, plain text, never leaves this machine.
+const memory = new SQLiteMemoryStore(filename);
 const runtime = new AgentRuntime(registry);
 const governance = new ExecutionGovernance(runtime, checkpoints, {
   trustedLocalProviders: live ? [] : [local.id],
 });
 const main = new MainAgent(router, registry, governance, conversations, {
-  providerId: provider.id, model: selectModel("VOID_MAIN_MODEL", "main-local"), effort, routesForEffort,
+  providerId: provider.id, model: selectModel("VOID_MAIN_MODEL", "main-local"), effort, routesForEffort, memory,
   // Same default as the web server: LIVE chat uses tool calling. The benchmark keeps measuring the JSON coordinator.
   ...(live && !benchmark && !process.env.VOID_CONVERSATION_MODE ? { conversationMode: "tools" as const } : {}),
   specialist: (task, agentContext, maxDelegations) => runtime.execute(task, agentContext, maxDelegations),
@@ -223,7 +227,9 @@ async function interactive(): Promise<void> {
         const [command, ...args] = text.split(/\s+/);
         switch (command) {
           case "/quit": input.close(); active?.controller.abort(); break;
-          case "/help": console.log("/mode · /effort [nível] · /models · /pending · /use ID · /partial · /pause · /resume · /approve calls=1 · /cancel · /quit"); break;
+          case "/help": console.log("/mode · /effort [nível] · /models · /pending · /use ID · /partial · /pause · /resume · /approve calls=1 · /cancel · /memory · /forget ID · /forget all · /quit"); break;
+          case "/memory":
+          case "/forget": console.log(memoryCommand(memory, command, args)); break;
           case "/mode": console.log(`Modo ${mode.toUpperCase()} · provedor ${provider.id}`); break;
           case "/effort": {
             const next = (args[0] ?? effort) as Effort;
@@ -293,5 +299,6 @@ try {
   else await interactive();
 } finally {
   conversations.close();
+  memory.close();
   checkpoints.close();
 }

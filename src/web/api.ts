@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import type { Readable } from "node:stream";
 import type { MainMessageSink } from "../agents/MainAgent.js";
+import { isMemoryId, memoryLimits } from "../conversation/MemoryStore.js";
 import type { ExecutionCheckpoint } from "../governance/checkpoint.js";
 import { positiveInteger, safetyCaps, validateLimits } from "../governance/effort.js";
 import { failureCategories, isOutputLimit, type ExecutionFailure, type FailureCategory } from "../types/failure.js";
@@ -29,6 +30,8 @@ const activeStates = ["running", "pausing"];
 const terminal = ["completed", "failed", "cancelled"];
 const extensionKeys = { calls: "calls", steps: "steps", time: "timeMs", tokens: "outputTokens" } as const;
 const actionNames = ["pause", "cancel", "resume", "approve"] as const;
+/** Body required by DELETE /api/memory, so that erasing everything is never a side effect of a stray request. */
+export const clearMemoryConfirmation = "apagar-tudo";
 
 function allowedExtension(reason: ExecutionCheckpoint["pauseReason"]): keyof Extension | null {
   switch (reason) {
@@ -128,7 +131,7 @@ function project(checkpoint: ExecutionCheckpoint, active: boolean): Execution {
 type Job = { turnId: string; executionId: string | null; controller: AbortController; draft?: string };
 
 export function createWebApi(runtime: WebRuntime, port: () => number, voice: ReturnType<typeof createVoiceService> | undefined = runtime.voice) {
-  const { main, conversations, ui } = runtime;
+  const { main, conversations, memory, ui } = runtime;
   const jobs = new Map<string, Job>();
   const subscribers = new Map<string, Set<Response>>();
   const notices = new Map<string, Notice[]>();
@@ -304,14 +307,37 @@ export function createWebApi(runtime: WebRuntime, port: () => number, voice: Ret
       if (host !== "127.0.0.1:" + port() && host !== "localhost:" + port()) {
         throw new HttpError(403, "invalid_host", "Acesso permitido apenas pelo endereço local.");
       }
-      if (method !== "GET" && method !== "POST") throw new HttpError(405, "method_not_allowed", "Método indisponível.");
-      if (method === "POST" && request.headers.origin !== "http://" + host) {
+      if (method !== "GET" && method !== "POST" && method !== "DELETE") throw new HttpError(405, "method_not_allowed", "Método indisponível.");
+      if (method !== "GET" && request.headers.origin !== "http://" + host) {
         throw new HttpError(403, "invalid_origin", "Origem da solicitação não autorizada.");
       }
       const url = new URL(request.url ?? "/", "http://" + host);
       const [, api, resource, sessionId, subresource, id, operation, ...extra] = url.pathname.split("/");
       if (api !== "api" || extra.length) missing();
-      if (resource === "system" && sessionId === undefined && method === "GET") {
+      if (method === "DELETE" && resource !== "memory") throw new HttpError(405, "method_not_allowed", "Método indisponível.");
+      if (resource === "memory") {
+        // /api/memory and /api/memory/:id. The memory belongs to the host's user, not to a session.
+        const recordId = sessionId;
+        if (subresource !== undefined || recordId === "") missing();
+        if (method === "GET" && recordId === undefined) {
+          const fetchSite = request.headers["sec-fetch-site"];
+          if (fetchSite && fetchSite !== "same-origin" && fetchSite !== "none") {
+            throw new HttpError(403, "invalid_origin", "Origem da solicitação não autorizada.");
+          }
+          json(response, 200, { records: memory.list(), limits: { records: memoryLimits.records } });
+        } else if (method === "DELETE" && recordId === undefined) {
+          const data = await body(request, 1024);
+          if (data.confirm !== clearMemoryConfirmation || Object.keys(data).length !== 1) {
+            invalid(`Para apagar toda a memória, envie {"confirm":"${clearMemoryConfirmation}"}.`);
+          }
+          json(response, 200, { deleted: memory.clear() });
+        } else if (method === "DELETE" && recordId !== undefined) {
+          if (!isMemoryId(recordId) || !memory.delete(recordId)) {
+            throw new HttpError(404, "not_found", "Registro de memória não encontrado.");
+          }
+          json(response, 200, { id: recordId });
+        } else throw new HttpError(405, "method_not_allowed", "Método indisponível.");
+      } else if (resource === "system" && sessionId === undefined && method === "GET") {
         json(response, 200, runtime.system(effort(url.searchParams.get("effort") ?? "auto")));
       } else if (resource === "usage" && sessionId === undefined && method === "GET") {
         json(response, 200, runtime.usage());
