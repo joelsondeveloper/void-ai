@@ -131,11 +131,13 @@ const filename = demo || benchmark || promptFile ? ":memory:" : process.env.VOID
 const sessionId = demo ? "demo" : process.env.VOID_CHAT_SESSION ?? "terminal";
 const checkpoints = new SQLiteCheckpointStore(filename);
 const conversations = new SQLiteConversationStore(filename);
-const governance = new ExecutionGovernance(new AgentRuntime(registry), checkpoints, {
+const runtime = new AgentRuntime(registry);
+const governance = new ExecutionGovernance(runtime, checkpoints, {
   trustedLocalProviders: live ? [] : [local.id],
 });
 const main = new MainAgent(router, registry, governance, conversations, {
   providerId: provider.id, model: selectModel("VOID_MAIN_MODEL", "main-local"), effort, routesForEffort,
+  specialist: (task, agentContext, maxDelegations) => runtime.execute(task, agentContext, maxDelegations),
   onCommunicationIssue: (kind) => {
     if (benchmark) communicationIssues.push(kind);
     console.error(`VOID [communication] ${kind}`);

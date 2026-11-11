@@ -86,6 +86,7 @@ export function createWebRuntime(options: {
   });
   const main = new MainAgent(router, registry, governance, conversations, {
     ...defaults, routesForEffort: routes, componentCatalog: (sessionId) => components.catalog(sessionId),
+    specialist: (task, context, maxDelegations) => agentRuntime.execute(task, context, maxDelegations),
     tool: (call, resources, context, maxTasks) => agentRuntime.invokeTool("main-agent", call, resources, context, {
       maxTasks,
     }),

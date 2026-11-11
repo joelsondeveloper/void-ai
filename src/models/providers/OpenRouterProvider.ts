@@ -2,6 +2,7 @@ import type {
   ModelProvider,
   ModelRequest,
   ModelResponse,
+  ModelToolCall,
   ModelUsage,
 } from "../../types/model.js";
 import { describeFailure, ExecutionError, type FailureCategory } from "../../types/failure.js";
@@ -127,7 +128,30 @@ function collectApiError(value: unknown, diagnostic: OpenRouterDiagnostic): stri
   return details.join(", ") || "API error without a recognized code";
 }
 
-function parseCompletion(data: unknown, response: Response, diagnostic: OpenRouterDiagnostic): ModelResponse {
+const toolNamePattern = /^[a-zA-Z0-9_-]{1,64}$/;
+const maxToolCalls = 8;
+const maxToolArguments = 32_000;
+
+function parseToolCalls(value: unknown): ModelToolCall[] | undefined {
+  if (!Array.isArray(value) || value.length === 0) return undefined;
+  const bad = (detail: string) => new OpenRouterError("invalid_response", `Invalid OpenRouter response: ${detail}.`);
+  if (value.length > maxToolCalls) throw bad("too many tool calls");
+  const seen = new Set<string>();
+  return value.map((entry): ModelToolCall => {
+    const fn = isRecord(entry) && isRecord(entry.function) ? entry.function : undefined;
+    if (!isRecord(entry) || !fn || typeof entry.id !== "string" || !/^[\w.:-]{1,128}$/.test(entry.id) ||
+        typeof fn.name !== "string" || !toolNamePattern.test(fn.name) ||
+        typeof fn.arguments !== "string" || fn.arguments.length > maxToolArguments) {
+      throw bad("malformed tool call");
+    }
+    if (seen.has(entry.id)) throw bad("duplicate tool call id");
+    seen.add(entry.id);
+    return { id: entry.id, name: fn.name, arguments: fn.arguments };
+  });
+}
+
+function parseCompletion(data: unknown, response: Response, diagnostic: OpenRouterDiagnostic,
+  toolsOffered = false): ModelResponse {
   const body = isRecord(data) ? data : undefined;
   const choice: unknown = Array.isArray(body?.choices) ? body.choices[0] : undefined;
   const first = isRecord(choice) ? choice : undefined;
@@ -150,6 +174,8 @@ function parseCompletion(data: unknown, response: Response, diagnostic: OpenRout
       (Array.isArray(message.reasoning_details) && message.reasoning_details.length > 0);
   }
   collectUsage(body?.usage, diagnostic);
+  // Tool calls are honored only when the request offered tools; otherwise they stay an unexpected response.
+  const toolCalls = toolsOffered && message ? parseToolCalls(message.tool_calls) : undefined;
 
   const apiError = body?.error ?? first?.error;
   const errorDetail = apiError == null ? undefined : collectApiError(apiError, diagnostic);
@@ -172,11 +198,22 @@ function parseCompletion(data: unknown, response: Response, diagnostic: OpenRout
   if (body.choices.length === 0) {
     throw new OpenRouterError("invalid_response", "Invalid OpenRouter response: no choices.");
   }
-  if (reason === "content_filter" || reason === "tool_calls") {
+  if (reason === "content_filter" || (reason === "tool_calls" && !toolCalls)) {
     throw new OpenRouterError("incomplete", `OpenRouter generation incomplete: finish_reason=${reason}.`);
   }
   if (!message) {
     throw new OpenRouterError("invalid_response", "Invalid OpenRouter response: missing or invalid message.");
+  }
+  if (toolCalls) {
+    if (diagnostic.usageIssue === "invalid_totals") {
+      throw new OpenRouterError("invalid_response", "Invalid OpenRouter response: invalid usage metrics.");
+    }
+    return {
+      content: typeof content === "string" ? content : "",
+      model: body.model,
+      toolCalls,
+      ...(diagnostic.usage === undefined ? {} : { usage: { ...diagnostic.usage } }),
+    };
   }
   if (content == null || (typeof content === "string" && !content.trim())) {
     const source = content === undefined ? "missing" : content === null ? "null" : "empty";
@@ -225,7 +262,7 @@ export class OpenRouterProvider implements ModelProvider {
       request.signal?.throwIfAborted();
       const failure = describeFailure(error);
       const eligible = ["transport", "missing_content", "timeout"].includes(failure.category) ||
-        ["free_price_unverified", "reasoning_unsupported", "context_length_exceeded", "decision_json", "decision_schema"].includes(failure.code ?? "") ||
+        ["free_price_unverified", "reasoning_unsupported", "tools_unsupported", "context_length_exceeded", "decision_json", "decision_schema"].includes(failure.code ?? "") ||
         failure.httpStatus === 404 || (failure.httpStatus !== undefined && failure.httpStatus >= 500);
       if (!eligible || !this.freeCatalog || !isFreeOpenRouterRoute(request.model) ||
           request.maxOutputTokens !== undefined) throw error;
@@ -237,7 +274,7 @@ export class OpenRouterProvider implements ModelProvider {
         } catch (fallbackError) {
           request.signal?.throwIfAborted();
           const failure = describeFailure(fallbackError);
-          const preflight = ["free_price_unverified", "fallback_incompatible", "reasoning_unsupported", "context_length_exceeded"];
+          const preflight = ["free_price_unverified", "fallback_incompatible", "reasoning_unsupported", "tools_unsupported", "context_length_exceeded"];
           if (failure.httpStatus !== undefined || !preflight.includes(failure.code ?? "")) throw fallbackError;
         }
       }
@@ -292,8 +329,15 @@ export class OpenRouterProvider implements ModelProvider {
         throw new ExecutionError({ category: "permission_denied", code: "fallback_incompatible",
           retryable: false, message: "A rota gratuita de reserva não suporta o formato solicitado." });
       }
+      const tools = request.tools?.length ? request.tools : undefined;
+      if (tools && support && !support.tools) {
+        throw new ExecutionError({ category: "permission_denied", code: "tools_unsupported", retryable: false,
+          message: "O catálogo não confirmou suporte a ferramentas para este modelo.", provider: this.id });
+      }
       // UTF-8 bytes conservatively estimate text input and message framing.
-      const input = request.messages.reduce((total, message) => total + Buffer.byteLength(message.content) + 16, 16);
+      const input = request.messages.reduce((total, message) => total + Buffer.byteLength(message.content) + 16 +
+        (message.toolCalls?.reduce((sum, call) => sum + Buffer.byteLength(call.name + call.arguments) + 32, 0) ?? 0),
+      16) + (tools ? Buffer.byteLength(JSON.stringify(tools)) : 0);
       const available = support?.contextLength === undefined ? Infinity : support.contextLength - input;
       const limit = Math.min(request.maxOutputTokens ?? Infinity, support?.maxCompletionTokens ?? Infinity, available);
       if (limit <= 0 || (reasoning?.maxTokens !== undefined && reasoning.maxTokens >= limit)) {
@@ -315,8 +359,18 @@ export class OpenRouterProvider implements ModelProvider {
         },
         body: JSON.stringify({
           model: request.model,
-          messages: request.messages,
+          messages: request.messages.map((message) => message.toolCalls || message.toolCallId ? {
+            role: message.role,
+            content: message.toolCalls && !message.content ? null : message.content,
+            ...(message.toolCalls ? { tool_calls: message.toolCalls.map(({ id, name, arguments: args }) =>
+              ({ id, type: "function", function: { name, arguments: args } })) } : {}),
+            ...(message.toolCallId ? { tool_call_id: message.toolCallId } : {}),
+          } : message),
           max_tokens: maxOutputTokens,
+          ...(tools ? {
+            tools: tools.map(({ name, description, parameters }) => ({ type: "function", function: { name, description, parameters } })),
+            tool_choice: request.toolChoice ?? "auto",
+          } : {}),
           ...(request.onText ? { stream: true, stream_options: { include_usage: true } } : {}),
           temperature: request.temperature,
           ...(responseFormat ? { response_format: { type: responseFormat } } : {}),
@@ -324,7 +378,7 @@ export class OpenRouterProvider implements ModelProvider {
             enabled: reasoning.enabled, effort: reasoning.effort, max_tokens: reasoning.maxTokens, exclude: reasoning.exclude,
           } } : {}),
           ...(this.freeCatalog ? { provider: { allow_fallbacks: false,
-            ...(reasoning || responseFormat ? { require_parameters: true } : {}),
+            ...(reasoning || responseFormat || tools ? { require_parameters: true } : {}),
             max_price: { prompt: 0, completion: 0, request: 0 } } } : {}),
         }),
         signal: signal ?? null,
@@ -348,8 +402,9 @@ export class OpenRouterProvider implements ModelProvider {
         }
       }
       request.signal?.throwIfAborted();
-      const completion = parseCompletion(data, response, diagnostic);
-      request.validateContent?.(completion.content);
+      const completion = parseCompletion(data, response, diagnostic, !!tools);
+      // A tool-call turn has no final text to validate yet.
+      if (!completion.toolCalls) request.validateContent?.(completion.content);
       return completion;
     } catch (error) {
       if (request.signal?.aborted) {

@@ -6,8 +6,11 @@ export async function readOpenRouterStream(
   let buffer = "", content = "";
   let model: unknown, provider: unknown, reason: unknown, usage: unknown, error: unknown;
   let hasReasoning = false;
+  // Tool calls arrive as fragments keyed by index; ids and names come first, arguments stream in pieces.
+  const calls: Array<{ id: string; type: "function"; function: { name: string; arguments: string } }> = [];
   const completion = () => ({ model, provider, usage, error, choices: [{ finish_reason: reason,
-    message: { content, ...(hasReasoning ? { reasoning: "present" } : {}) } }] });
+    message: { content, ...(hasReasoning ? { reasoning: "present" } : {}),
+      ...(calls.length ? { tool_calls: calls.filter(Boolean) } : {}) } }] });
   try {
     while (true) {
       const chunk = await reader.read();
@@ -32,6 +35,19 @@ export async function readOpenRouterStream(
         if (error) return completion();
         const delta = choice?.delta;
         hasReasoning ||= !!delta?.reasoning || !!delta?.reasoning_details?.length;
+        if (Array.isArray(delta?.tool_calls)) {
+          for (const fragment of delta.tool_calls) {
+            const index = fragment?.index;
+            if (!Number.isSafeInteger(index) || index < 0 || index > 16) throw new SyntaxError("Invalid OpenRouter tool call");
+            const call = calls[index] ??= { id: "", type: "function", function: { name: "", arguments: "" } };
+            if (typeof fragment.id === "string") call.id = fragment.id;
+            if (typeof fragment.function?.name === "string") call.function.name += fragment.function.name;
+            if (typeof fragment.function?.arguments === "string") {
+              call.function.arguments += fragment.function.arguments;
+              if (call.function.arguments.length > 64_000) throw new SyntaxError("OpenRouter tool call too large");
+            }
+          }
+        }
         if (typeof delta?.content === "string" && delta.content && reason !== "content_filter") {
           content += delta.content;
           onText(content);

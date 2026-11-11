@@ -24,6 +24,7 @@ interface CatalogEntry {
   mandatory: boolean;
   canDisable: boolean;
   jsonObject: boolean;
+  tools: boolean;
 }
 
 export class OpenRouterFreeCatalog {
@@ -95,6 +96,7 @@ export class OpenRouterFreeCatalog {
           mandatory: reasoning?.mandatory === true,
           canDisable: reasoning?.mandatory === false,
           jsonObject: Array.isArray(entry.supported_parameters) && entry.supported_parameters.includes("response_format"),
+          tools: Array.isArray(entry.supported_parameters) && entry.supported_parameters.includes("tools"),
         });
       }
     }

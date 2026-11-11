@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type { ConversationStore, ConversationTurn } from "../conversation/ConversationStore.js";
 import { parseDecision, validateDelegations, type MainDecision } from "../conversation/mainDecision.js";
-import { resolvePersona } from "../conversation/persona.js";
+import { chatSystemPrompt, ignoreSentinel, resolvePersona } from "../conversation/persona.js";
 import { parseSynthesis, renderResults } from "../conversation/synthesis.js";
+import { runToolLoop } from "../conversation/toolLoop.js";
+import { callBudget, operationTools, specialistTools, type SpecialistRunner, type TurnAction } from "../conversation/voidTools.js";
 import type { ExecutionGovernance, PlanningUsage } from "../governance/ExecutionGovernance.js";
 import { validUsage } from "../governance/modelPolicy.js";
 import type { ExecutionObserver, ProgressEvent } from "../governance/ExecutionRun.js";
@@ -15,7 +17,7 @@ import type { AgentRegistry } from "../runtime/AgentRegistry.js";
 import type { AgentContext } from "../types/context.js";
 import { describeFailure, ExecutionError, isOutputLimit, type ExecutionFailure } from "../types/failure.js";
 import type { PlanStep } from "../types/plan.js";
-import type { ModelRequest, ModelRoute, ModelRoutes } from "../types/model.js";
+import type { ModelMessage, ModelRequest, ModelRoute, ModelRoutes, ServedModel } from "../types/model.js";
 
 import type { GenerateComponent } from "../web/render-operations.js";
 import { isUiAction, type UiAction } from "../web/ui-contracts.js";
@@ -55,6 +57,16 @@ export interface MainAgentOptions {
   effort?: Effort;
   historyTurns?: number;
   persona?: string;
+  /**
+   * "decision" (default): the coordinator answers in a strict JSON envelope and delegates through a plan.
+   * "tools": free-text conversation with native tool calling; specialists are tools the model calls when needed.
+   * Also settable with VOID_CONVERSATION_MODE.
+   */
+  conversationMode?: ConversationMode;
+  /** Runs a specialist for the "tools" mode, normally AgentRuntime.execute. Without it no specialist tools exist. */
+  specialist?: SpecialistRunner;
+  /** Maximum model calls in one "tools" turn, besides the effort's call limit. */
+  maxToolIterations?: number;
   componentCatalog?: (sessionId: string) => { key: string; title: string; version: number }[];
   tool?: (call: { name: string; arguments: unknown }, resources: { sessionId: string; generate: GenerateComponent },
     context: AgentContext, maxTasks: number) => Promise<unknown>;
@@ -63,10 +75,19 @@ export interface MainAgentOptions {
   onCommunicationIssue?: (kind: "subscriber" | "progress" | "synthesis" | "history", executionId?: string) => void | Promise<void>;
 }
 
+export type ConversationMode = "decision" | "tools";
+
+function conversationMode(value: string | undefined): ConversationMode {
+  if (value === undefined || value === "" || value === "decision") return "decision";
+  if (value === "tools") return "tools";
+  throw new Error("VOID_CONVERSATION_MODE inválida. Use decision ou tools.");
+}
+
 type Emit = (message: MainMessage) => void;
 const terminal = (status: ExecutionCheckpoint["status"]) => ["completed", "failed", "cancelled"].includes(status);
 const sessionPattern = /^[a-zA-Z0-9_-]{1,128}$/;
 const modelTimeoutMs = 60_000;
+const toolTurnTimeoutMs = 180_000;
 
 function outputLimit(route: number | undefined, budget: number | undefined): number | undefined {
   return route === undefined ? budget : budget === undefined ? route : Math.min(route, budget);
@@ -84,6 +105,7 @@ export class MainAgent {
   private readonly historyTurns: number;
   private readonly options: MainAgentOptions;
   private readonly persona: ReturnType<typeof resolvePersona>;
+  private readonly mode: ConversationMode;
 
   constructor(
     private readonly router: ModelRouter,
@@ -93,9 +115,10 @@ export class MainAgent {
     options: MainAgentOptions,
   ) {
     this.options = { ...options };
-    this.persona = resolvePersona(options.persona ?? process.env.VOID_PERSONA);
+    this.mode = conversationMode(options.conversationMode ?? process.env.VOID_CONVERSATION_MODE);
+    this.persona = resolvePersona(options.persona ?? process.env.VOID_PERSONA ?? (this.mode === "tools" ? "void-v2" : "void-v1"));
     this.maxTokens = options.maxOutputTokens ?? 1600;
-    this.historyTurns = options.historyTurns ?? 4;
+    this.historyTurns = options.historyTurns ?? (this.mode === "tools" ? 10 : 4);
     if (!options.providerId.trim() || !options.model.trim() ||
         !Number.isSafeInteger(this.maxTokens) || this.maxTokens < 1 ||
         !Number.isSafeInteger(this.historyTurns) || this.historyTurns < 0 || this.historyTurns > 12 ||
@@ -121,6 +144,14 @@ export class MainAgent {
       if (configured) this.validateRoutes(configured);
       const routes = configured ? structuredClone(configured) : undefined;
       const decisionRoute = routes?.decision ?? this.defaultRoute();
+      if (this.mode === "tools") {
+        try {
+          return await this.converse({ input, message, emit, effort, limits, routes, route: decisionRoute });
+        } catch (error) {
+          // The model cannot take tools. Nothing was shown yet, so the strict-JSON path can still answer.
+          if (describeFailure(error).code !== "tools_unsupported") throw error;
+        }
+      }
       const catalog = this.agents.catalog("main-agent", input.context.permissions);
       const firstAgent = catalog.find(({ planCapabilities }) => planCapabilities.length > 0);
       const delegationExample = firstAgent ? JSON.stringify({
@@ -276,6 +307,110 @@ export class MainAgent {
         this.governance.start({ id: executionId, plan: decision.steps, context: { ...input.context, sessionId: input.sessionId },
           effort, limits, planning, ...(routes ? { modelRoutes: routes } : {}), ...observer }));
     });
+  }
+
+  /**
+   * Conversation as a tool-calling loop. The model answers in free text and calls tools (specialists, interface
+   * operations) only when they help; results come back to the same conversation, so the final reply keeps its voice.
+   */
+  private async converse(c: { input: MainRequest; message: string; emit: Emit; effort: ExplicitEffort;
+    limits: ExecutionLimits; routes: ModelRoutes | undefined; route: ModelRoute }): Promise<MainResult> {
+    const { input, message, emit, effort, limits, routes, route } = c;
+    const executionId = randomUUID();
+    const trace: GenerationTrace = { sessionId: input.sessionId, executionId, effort, role: "decision" };
+    const voice = input.source === "voice";
+    const budget = callBudget(limits.calls);
+    const actions: TurnAction[] = [];
+    const planning: PlanningUsage = { elapsedMs: 0 };
+    const signal = AbortSignal.any([input.context.signal, AbortSignal.timeout(limits.pauseAfterMs ?? toolTurnTimeoutMs)]);
+    const warning = input.stream ? setTimeout(() => emit({ type: "generation_warning",
+      text: "A geração continua. Você pode interrompê-la pelo botão Parar." }), limits.warnAfterMs) : undefined;
+    const turnContext = (): AgentContext => ({ ...input.context, executionId, sessionId: input.sessionId, signal,
+      ...(routes ? { modelRoutes: routes } : {}) });
+
+    const runTool = this.options.tool;
+    const componentGeneration = this.componentGeneration(routes, trace, limits, planning, 0, 0);
+    const tools = [
+      ...(this.options.specialist ? specialistTools({ agents: this.agents, permissions: input.context.permissions,
+        run: this.options.specialist, context: turnContext, budget, maxDelegations: Math.min(limits.steps, 4), actions }) : []),
+      ...(runTool ? operationTools({ tools: this.agents.toolCatalog("main-agent", input.context.permissions), actions,
+        invoke: (call) => runTool(call, { sessionId: input.sessionId,
+          // Interface authoring spends model calls too, so it draws from the same per-turn budget.
+          generate: async (...args) => {
+            if (!budget.take(1)) throw new ExecutionError({ category: "budget_exceeded", retryable: false,
+              message: "O limite de chamadas deste turno foi atingido." });
+            return componentGeneration(...args);
+          } }, turnContext(), limits.steps) }) : []),
+    ];
+
+    const history: ModelMessage[] = this.conversations.history(input.sessionId, this.historyTurns)
+      .map(({ role, content }) => ({ role, content: content.slice(0, 6_000) }));
+    const system = chatSystemPrompt(this.persona, { voice, tools: tools.map(({ spec }) => spec.name) });
+
+    let draft = "";
+    let lastPreviewAt = -Infinity;
+    let usedOutput = 0;
+    let servedModel: ServedModel | undefined;
+    let returnedModel: string | undefined;
+    const show = (text: string) => {
+      if (input.stream && text !== draft) { draft = text; lastPreviewAt = performance.now(); emit({ type: "draft", text }); }
+    };
+    const preview = (content: string) => {
+      // The silence marker of a voice turn must never flash on screen.
+      if (voice && ignoreSentinel.startsWith(content.trim())) return;
+      if (content && draft && performance.now() - lastPreviewAt < 100) return;
+      show(content);
+    };
+
+    try {
+      const result = await withGenerationTrace(trace, () => runToolLoop({
+        messages: [{ role: "system", content: system }, ...history, { role: "user", content: message }],
+        tools, signal, maxIterations: Math.min(this.options.maxToolIterations ?? 6, limits.calls),
+        forceFinal: () => budget.remaining <= 1,
+        onToolStart: (tool) => show(tool.status ?? `Usando ${tool.label}…`),
+        generate: async (turn) => {
+          if (!budget.take()) throw new ExecutionError({ category: "budget_exceeded", retryable: false,
+            message: "O limite de chamadas deste turno foi atingido." });
+          const maxOutputTokens = outputLimit(route.maxOutputTokens,
+            limits.outputTokens === undefined ? undefined : limits.outputTokens - usedOutput);
+          if (maxOutputTokens !== undefined && maxOutputTokens <= (route.reasoning?.maxTokens ?? 0)) {
+            throw new ExecutionError({ category: "budget_exceeded", retryable: false,
+              message: "O orçamento de geração deste turno foi atingido." });
+          }
+          lastPreviewAt = -Infinity;
+          const { response, planning: used } = await this.governance.planRequest(this.router, route.providerId, {
+            model: route.model, messages: turn.messages,
+            ...(turn.tools.length ? { tools: turn.tools, toolChoice: turn.toolChoice } : {}),
+            ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
+            ...(route.temperature === undefined ? {} : { temperature: route.temperature }),
+            ...(route.reasoning === undefined ? {} : { reasoning: route.reasoning }),
+            ...(input.stream ? { onText: preview } : {}),
+          }, limits, signal);
+          usedOutput += validUsage(response.usage) ? response.usage.outputTokens : maxOutputTokens ?? 0;
+          planning.usage = { inputTokens: 0, outputTokens: usedOutput };
+          servedModel = used.servedModel ?? servedModel;
+          if (isModelLabel(response.model)) returnedModel = response.model;
+          return response;
+        },
+      }));
+      this.reportDecision({ trace, requestedModel: route.model, ...(returnedModel ? { returnedModel } : {}),
+        outcome: result.toolCalls > 0 ? "tool" : "direct" });
+      if (voice && result.content === ignoreSentinel) return { kind: "ignored" };
+
+      try {
+        this.conversations.recordDirect(input.sessionId, message, result.content, input.turnId, servedModel, actions.length > 0);
+      } catch { this.issue("history"); }
+      for (const { text, action } of actions) emit({ type: "ui", text, action });
+      emit({ type: "final", text: result.content });
+      return { kind: "direct" };
+    } catch (error) {
+      const { category, code } = describeFailure(error, signal);
+      this.reportDecision({ trace, requestedModel: route.model, outcome: "rejected",
+        failure: { category, ...(code ? { code } : {}) } });
+      throw error;
+    } finally {
+      clearTimeout(warning);
+    }
   }
 
   resume(sessionId: string, executionId: string, context: AgentContext, extension: Extension,
