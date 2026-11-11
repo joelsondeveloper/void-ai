@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
 import type { ConversationStore, ConversationTurn } from "../conversation/ConversationStore.js";
 import { parseDecision, validateDelegations, type MainDecision } from "../conversation/mainDecision.js";
-import { chatSystemPrompt, ignoreSentinel, resolvePersona } from "../conversation/persona.js";
+import type { MemoryStore } from "../conversation/MemoryStore.js";
+import { chatSystemPrompt, ignoreSentinel, memoryBlockFor, resolvePersona } from "../conversation/persona.js";
 import { parseSynthesis, renderResults } from "../conversation/synthesis.js";
 import { runToolLoop } from "../conversation/toolLoop.js";
-import { callBudget, operationTools, specialistTools, type SpecialistRunner, type TurnAction } from "../conversation/voidTools.js";
+import { callBudget, memoryTools, operationTools, specialistTools, type SpecialistRunner, type TurnAction } from "../conversation/voidTools.js";
 import type { ExecutionGovernance, PlanningUsage } from "../governance/ExecutionGovernance.js";
 import { validUsage } from "../governance/modelPolicy.js";
 import type { ExecutionObserver, ProgressEvent } from "../governance/ExecutionRun.js";
@@ -67,12 +68,17 @@ export interface MainAgentOptions {
   specialist?: SpecialistRunner;
   /** Maximum model calls in one "tools" turn, besides the effort's call limit. */
   maxToolIterations?: number;
+  /**
+   * Persistent memory for the "tools" mode: a memory block in every turn's prompt and the remember, recall and
+   * forget tools. Without it the conversation has no memory across sessions.
+   */
+  memory?: MemoryStore;
   componentCatalog?: (sessionId: string) => { key: string; title: string; version: number }[];
   tool?: (call: { name: string; arguments: unknown }, resources: { sessionId: string; generate: GenerateComponent },
     context: AgentContext, maxTasks: number) => Promise<unknown>;
   routesForEffort?: (effort: ExplicitEffort) => ModelRoutes;
   formatProgress?: (event: ProgressEvent, fallback: string) => string;
-  onCommunicationIssue?: (kind: "subscriber" | "progress" | "synthesis" | "history", executionId?: string) => void | Promise<void>;
+  onCommunicationIssue?: (kind: "subscriber" | "progress" | "synthesis" | "history" | "memory", executionId?: string) => void | Promise<void>;
 }
 
 export type ConversationMode = "decision" | "tools";
@@ -335,6 +341,20 @@ export class MainAgent {
     const turnContext = (): AgentContext => ({ ...input.context, executionId, sessionId: input.sessionId, signal,
       ...(routes ? { modelRoutes: routes } : {}) });
 
+    const history: ModelMessage[] = this.conversations.history(input.sessionId, this.historyTurns)
+      .map(({ role, content }) => ({ role, content: content.slice(0, 6_000) }));
+    const { memory } = this.options;
+    // remember only accepts what the user said, so it is grounded in the user's own messages of this conversation.
+    const memoryTurn = memory ? memoryTools({ store: memory, sessionId: input.sessionId,
+      ...(input.turnId ? { turnId: input.turnId } : {}),
+      userText: [message, ...history.flatMap(({ role, content }) => role === "user" ? [content] : [])] }) : undefined;
+    let memoryPrompt: string | undefined;
+    if (memory) {
+      // A broken memory never blocks the conversation: the turn goes on without the block.
+      try { memoryPrompt = memoryBlockFor(memory, message); }
+      catch { this.issue("memory"); }
+    }
+
     const runTool = this.options.tool;
     const componentGeneration = this.componentGeneration(routes, trace, limits, planning, 0, 0);
     const tools = [
@@ -348,11 +368,11 @@ export class MainAgent {
               message: "O limite de chamadas deste turno foi atingido." });
             return componentGeneration(...args);
           } }, turnContext(), limits.steps) }) : []),
+      ...(memoryTurn?.tools ?? []),
     ];
 
-    const history: ModelMessage[] = this.conversations.history(input.sessionId, this.historyTurns)
-      .map(({ role, content }) => ({ role, content: content.slice(0, 6_000) }));
-    const system = chatSystemPrompt(this.persona, { voice, tools: tools.map(({ spec }) => spec.name) });
+    const system = chatSystemPrompt(this.persona, { voice, tools: tools.map(({ spec }) => spec.name),
+      ...(memory ? { memory: { block: memoryPrompt, tools: !!memoryTurn } } : {}) });
 
     let draft = "";
     let lastPreviewAt = -Infinity;
@@ -402,11 +422,16 @@ export class MainAgent {
       }));
       this.reportDecision({ trace, requestedModel: route.model, ...(returnedModel ? { returnedModel } : {}),
         outcome: result.toolCalls > 0 ? "tool" : "direct" });
+      // Background noise leaves no trace: no history and nothing the memory tools staged.
       if (voice && result.content === ignoreSentinel) return { kind: "ignored" };
 
       try {
         this.conversations.recordDirect(input.sessionId, message, result.content, input.turnId, servedModel, actions.length > 0);
       } catch { this.issue("history"); }
+      if (memoryTurn) {
+        try { if (memoryTurn.commit().failed) this.issue("memory"); }
+        catch { this.issue("memory"); }
+      }
       for (const { text, action } of actions) emit({ type: "ui", text, action });
       emit({ type: "final", text: result.content });
       return { kind: "direct" };
