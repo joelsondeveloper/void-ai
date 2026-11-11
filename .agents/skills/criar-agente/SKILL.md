@@ -5,28 +5,11 @@ description: Cria ou integra um agente no VOID/Singularity OS, do contrato e reg
 
 # Criar agente no VOID
 
-Criar um agente significa integrá-lo ao sistema inteiro. A entrega exige uma capacidade alcançável por um chamador autorizado e validada pelo ponto de entrada real.
+1. Implemente `ExecutableAgent.execute(task, context)` para participar do planejamento. Declare ID estável, nome, descrição fiel e capacidades em `definition`. Retorne `{ content }` e uma ação validada do UI Runtime quando a etapa produzir uma janela. Identidades sem `execute` servem apenas para operações tipadas.
+2. Registre a instância no bootstrap do canal. Na web, use `src/web/runtime.ts`. Derive as permissões da política do host. `AgentRegistry.catalog` expõe capacidades executáveis e operações autorizadas. A validação e o executor resolvem IDs e capacidades pelo mesmo registro.
+3. Para um agente cognitivo, declare `definition.model` com `configKey` e `fallback` gratuito. O bootstrap monta as rotas por agente a partir do registro. Leia `context.modelRoute` e use `ModelRouter` no escopo da execução. Por exemplo, `configKey: "RENDERER"` lê `VOID_RENDERER_MODEL` e variantes por esforço. Mantenha a política de custo zero.
+4. Declare ferramentas e delegações como `AgentOperation<Input, Output>`. Registre o proprietário e os chamadores permitidos. Para uma ferramenta do modelo, declare nome, descrição, exemplo, validador de argumentos e preparação com recursos confiáveis. Use `context.invoke` para delegar e `AgentRuntime.invokeTool` para despachar. O runtime aplica limites, autorização, prevenção de ciclos, cancelamento e rastreamento pai–filho.
+5. Trate objetivos, resultados e rótulos persistidos como dados. Valide saídas do modelo e efeitos na fronteira. Preserve a sessão, o isolamento da prévia e a autorização por capacidade. Use ações e referências tipadas para comunicar a UI. O checkpoint mantém a rota, o modelo servido, a saída e a categoria da falha.
+6. Teste a descoberta no canal real, a seleção no plano, as permissões, a delegação, o cancelamento e ao menos uma falha. Exercite paráfrases, negações e ambiguidade no caminho de decisão. Execute os testes de navegador para efeitos visuais e registre quais respostas foram simuladas e quais passaram por modelo LIVE.
 
-## Procedimento
-
-1. Inspecione `src/types/agent.ts`, `src/runtime/AgentRegistry.ts`, `src/runtime/AgentRuntime.ts` e o bootstrap do canal alvo. Na web, comece por `src/web/runtime.ts`. Defina ID estável, nome, descrição fiel, responsabilidade, limites e chamadores.
-2. Escolha a interface. Use `ExecutableAgent.execute(AgentTask, AgentContext)` para etapas de plano com saída textual. Use `AgentOperation<Input, Output>` para operações especializadas ou resultados estruturados. Nesse caso, implemente a identidade `AgentIdentity` e o handler. Valide dados externos na fronteira antes de invocar a operação.
-3. Registre a identidade no bootstrap antes das operações. Declare os chamadores de cada operação em `registerOperation`. Execute via `AgentRuntime` ou `context.invoke` para preservar contexto, permissões, cancelamento, orçamento e rastreamento. Evite chamadas diretas a handlers e conversões de resultado estruturado em texto.
-4. Derive as capacidades disponíveis de `AgentRegistry.catalog(caller, permissions)`. O catálogo separa `planCapabilities` de `operations`. Declare capacidades de plano na definição e capacidades tipadas no token da operação. Se o modelo precisar acionar uma operação tipada, conecte a ferramenta real, seu validador JSON e seu despacho. Preserve a autorização por chamador e não copie listas de agentes no prompt.
-5. Conecte prompts, contexto, ferramentas e rotas de modelo quando aplicável. Reutilize a governança de custo e tempo. Trate a saída do modelo como dados. Mantenha as permissões concedidas pelo bootstrap ou pela política do usuário. A exposição no catálogo não concede acesso a ferramentas privilegiadas.
-6. Integre o serviço, persistência e entrega no canal alvo. Em UI, valide a ação e use o UI Runtime e o Window Manager. Para código gerado, reutilize compilação, versões e prévia isolada. Preserve os fluxos já disponíveis.
-7. Teste o contrato, as permissões e pelo menos um caminho de falha. Teste descoberta e despacho pelo bootstrap real. Faça o teste ponta a ponta pelo canal alvo. Para UI, confirme o efeito no navegador. Documente o que a capacidade faz, como acioná-la e os limites verificados.
-
-## Exemplos
-
-- **ResearchAgent** implementa `ExecutableAgent`. O MainAgent pode escolher `comparative-analysis` em um plano quando essa capacidade aparece no catálogo autorizado.
-- **AgentRenderer** registra identidade e a operação tipada `renderWindow`, chamada pelo MainAgent após validar `ui.render`. Ele usa `context.invoke(authorComponent, input)` para acionar o DevAgent. A saída é uma ação de janela entregue ao navegador. `ui-author` pertence ao DevAgent e é visível a quem pode invocá-la.
-
-## Checklist
-
-- [ ] Identidade, responsabilidade, contratos e limites definidos.
-- [ ] Implementação registrada no bootstrap e descoberta pelo chamador certo.
-- [ ] Runtime, contexto, permissões e orçamento aplicados pelo caminho real.
-- [ ] Serviço, ferramenta, UI e persistência conectados onde aplicável.
-- [ ] Testes de contrato, integração e fluxo ponta a ponta executados.
-- [ ] Capacidade documentada com evidência, limitações e testes pendentes.
+O AgentRenderer é um exemplo de agente com etapa cognitiva, delegação tipada ao DevAgent e entrega de uma ação estruturada. Registrar um agente adicional não exige alterar o MainAgent, o executor, o frontend ou a validação de checkpoints.

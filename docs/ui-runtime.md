@@ -1,51 +1,47 @@
 # UI Runtime do VOID
 
-O navegador inicia em Focus, com o anel no centro. Clique ou toque no anel para acessar texto e voz, ou pressione **Ctrl+K** (**⌘K** no Mac). Digite ou diga **modo workspace** para abrir a interface com sessões, conversa e operações. Para voltar ao anel, use **voltar ao focus**.
+No Focus, clique no anel ou pressione **Ctrl+K** (**⌘K** no Mac). O mesmo fluxo de decisão recebe texto e transcrições de voz.
 
-## Comandos de interface
-
-| Experimente dizer ou digitar | Resultado |
+| Solicitação | Ação |
 | --- | --- |
-| `Modo Workspace` / `volte ao Focus` | Alterna o modo |
-| `Mostre as configurações` | Abre os ajustes de voz e esforço |
-| `Abra o painel de uso` | Abre a telemetria dos provedores |
-| `Abra as sessões` | Abre o arquivo de sessões |
-| `Mostre as operações` | Abre o painel da execução |
-| `Resetar layout` | Volta ao Focus e descarta a visualização atual |
+| “Onde posso personalizar você?” | Abre Configurações se a intenção for acessar o painel |
+| “Quero trabalhar com minhas conversas e sessões” | Alterna para Workspace |
+| “Prefiro voltar ao anel” | Alterna para Focus |
+| “Restaure a disposição inicial” | Restaura o layout |
 
-As janelas flutuam sobre o anel e usam os painéis reais do VOID. Arraste pelo título ou redimensione pelo canto inferior direito. Use os controles do título para maximizar, restaurar, minimizar ou fechar. O botão que aparece após minimizar restaura a janela. **Esc** fecha primeiro a entrada de comando, se aberta, ou fecha a janela. Abrir outro painel substitui o anterior. Configurações pausa a escuta enquanto estiver visível.
+O MainAgent recebe a conversa recente, o catálogo de agentes executáveis e as operações autorizadas. O modelo escolhe entre responder, pedir esclarecimento, executar uma ferramenta ou propor um plano com dependências. O registro valida capacidades, chamadores e argumentos. Uma pergunta informativa, negação ou hipótese pode ser respondida sem executar ação. Os controles manuais do navegador continuam determinísticos. Em LIVE, o despacho por texto ou voz exige um provedor configurado. O provedor MOCK oferece cenários fixos de demonstração.
 
-## Visualizações
-
-No modo LIVE, um pedido explícito como “Crie um gráfico de barras com janeiro 10 e fevereiro 15” pode receber um schema da mesma decisão do MainAgent que atende à conversa. A versão simulada e o modo LIVE também aceitam um schema fornecido diretamente. Esse caminho é local e determinístico.
-
-```text
-Exibir {"title":"Receitas","blocks":[{"kind":"card","title":"Total","value":25},{"kind":"table","title":"Meses","columns":["Mês","Receita"],"rows":[["Janeiro",10],["Fevereiro",15]]},{"kind":"bar_chart","title":"Receita mensal","points":[{"label":"Janeiro","value":10},{"label":"Fevereiro","value":15}]}]}
-```
-
-O renderer aceita cartões, tabelas e barras com eixo zero. O contrato limita títulos, campos, tamanhos, números finitos, blocos, linhas e colunas. O conteúdo entra como texto e números em componentes React registrados. O schema não aceita HTML, URLs de recursos, atributos de evento, estilos ou código.
-
-## Integração e limites
-
-- O MainAgent encaminha os comandos locais de texto e voz à mesma ferramenta. Comandos inequívocos funcionam mesmo quando o provedor de modelos está indisponível. A ação aparece na interface e fica fora do chat e da leitura em voz alta.
-- Pedidos mais complexos que mencionam um painel podem resultar em `{"mode":"tool","call":{"name":"ui.openWindow","arguments":{"component":"settings"}}}`. A ferramenta também aceita `ui.closeWindow`. O contrato aceita apenas Configurações, Uso, Sessões e Operações e rejeita componentes ausentes do pedido e campos extras. A ferramenta não altera preferências nem executa operações dentro do painel.
-- `open_panel`, `close_panel`, `switch_mode`, `update_panel`, `open_component` e `reset_layout` compartilham o contrato e o redutor com os controles manuais. O único painel com conteúdo atualizável por schema é `display`.
-- A API usa as mesmas verificações de origem e de sessão da conversa. O snapshot SSE leva a última ação transitória de cada sessão recente. O navegador valida a ação e aplica apenas a que corresponde ao envio pendente nessa aba. Um reload inicia em Focus e mantém a conversa, sem reabrir um painel antigo.
-- O schema do modelo só é aceito quando o pedido atual começa com uma solicitação explícita de visualização. Confirme os dados em visualizações montadas pelo modelo.
 ## Componentes sob demanda
 
-**Quais agentes estão disponíveis?** consulta o registro autorizado, inclusive em LIVE sem chave. O AgentRenderer aparece no canal web por oferecer operações de janela. O terminal anuncia as capacidades que seu próprio bootstrap registra.
+1. O MainAgent escolhe o AgentRenderer para uma etapa `ui-render` quando o pedido exige apresentação visual. O mesmo registro alimenta descoberta, planejamento e execução. A consulta “Quais agentes você possui?” usa esse catálogo.
+2. O AgentRenderer tem rota própria. Recebe o objetivo, resultados das dependências e o catálogo da sessão. Decide entre reaproveitar um artefato, montar uma visualização declarativa, pedir detalhes ou delegar TSX ao DevAgent. Abrir um painel nativo ou reabrir uma versão por chave não requer uma chamada ao modelo do Renderer.
+3. A delegação usa `AgentInvocation.invoke` e permanece dentro do escopo de permissões, cancelamento e orçamento do plano. O DevAgent valida e compila a proposta sem executá-la no servidor. Quando o Renderer solicita revisão, compara o código com o objetivo e pode pedir uma correção antes de salvar. Falhas de compilação ou truncamento permitem uma tentativa adicional dentro dos limites autorizados.
+4. A etapa persiste uma resposta textual e, quando cabível, uma ação estruturada. O Runtime entrega a ação à sessão pelo mesmo canal usado pelos painéis nativos. As versões e a trilha pai–filho ficam no SQLite. Os modelos efetivamente servidos aparecem no checkpoint, com o ID do agente que os acionou.
 
-No Focus, pressione **Ctrl+K** e envie **Crie uma interface com um contador de expedições e um checklist de equipamentos**. Esse pedido tem um cenário de modelo simulado em MOCK. Em LIVE, o MainAgent e o DevAgent usam as rotas gratuitas já configuradas. Quando a janela abrir, clique em **+** e marque o item do checklist. Envie **Reabra a janela do contador de expedições** na mesma sessão para reutilizar a versão salva.
+A prévia abre em iframe de origem opaca e executa o código gerado em um worker dedicado. A árvore React e os eventos passam por um canal restrito. O código pode usar JSX/TSX, componentes próprios, estado, hooks, eventos, formulários locais, SVG, estilos inline, CSS responsivo e animações CSS. Imports estáticos de React e os widgets legados `Counter` e `Toggle` são compatíveis. Cartões, tabelas e barras com eixo zero continuam disponíveis pelo schema declarativo.
 
-1. O MainAgent oferece `ui.render` ao modelo para pedidos de interface. A decisão aceita JSON com um pedido, uma chave de catálogo opcional, um schema declarativo opcional e a indicação opcional de revisão. Ele fornece ao modelo os títulos e as chaves dos componentes recentes da sessão.
-2. O AgentRenderer resolve um painel nativo, compõe cartões, tabelas e gráficos ou procura um artefato compatível pela chave da sessão. Sem um artefato reutilizável, invoca o DevAgent pelo AgentRuntime. O registro autoriza cada relação entre chamador e especialista. O runtime propaga o contexto e o cancelamento, contabiliza tarefas, recusa ciclos e grava a relação pai–filho no SQLite.
-3. O DevAgent produz um componente TSX, valida o código, compila e faz uma renderização de teste com React. Pode pedir uma correção após uma falha de validação, dentro do saldo de chamadas, tokens e tempo. Quando há truncamento, o fluxo pode repetir a decisão visual em formato compacto e o DevAgent pode tentar uma versão menor. Cada etapa tem no máximo uma nova tentativa dentro do orçamento, sem ampliar o teto configurado nem mudar para uma rota paga. Ele salva a origem e o resultado compilado e devolve a referência versionada. O SQLite guarda o título, a versão, a permissão de prévia, a sessão, a tarefa autora, a data e o resumo criptográfico do artefato.
-4. O AgentRenderer devolve a especificação da janela ao canal de ações do UI Runtime. O Window Manager abre uma prévia em um iframe com origem opaca e política de conteúdo restritiva. O JavaScript compilado cria o componente React na prévia. O contador e o checklist mantêm estado enquanto a prévia está aberta. A ação fica fora da conversa e da leitura em voz alta.
+O worker fica sem DOM e sem rede. A ponte aceita árvores e eventos limitados, filtra navegação, carregamento de recursos e HTML injetado. O servidor limita o tamanho do módulo. O navegador limita o tamanho e a profundidade da árvore e interrompe um worker sem resposta. O watchdog é um limite de tempo aproximado. O navegador não oferece uma cota rígida de memória por worker. APIs do DOM, armazenamento, dependências externas e acesso ao host ficam fora da prévia.
 
-### Escopo desta fase
+As versões anteriores permanecem no banco. Estado de formulário fica na janela atual. A ação de abertura é transitória e vinculada à sessão. Recarregar volta ao Focus. O terminal descobre os agentes que o seu canal registra e não possui o Runtime de janelas.
 
-- A prévia aceita um subconjunto de TSX com tags e atributos permitidos e dois widgets com estado local, `Counter` e `Toggle`. A validação recusa código fora desse contrato, incluindo importações, expressões arbitrárias, atributos de eventos e recursos externos. A prévia executa sem acesso à rede, ao DOM do VOID, ao armazenamento da origem, a credenciais ou a ferramentas do host.
-- Uma revisão mantém as versões anteriores no banco. Reabertura e revisão usam a chave da sessão ou, na ausência dela, a descrição normalizada. Os dados preenchidos nos widgets não são persistidos. O catálogo usa correspondência por chave e descrição, com os títulos recentes para orientar a decisão do modelo.
-- A criação termina no artefato registrado localmente. Ficam para uma próxima fase a inspeção de versões pela interface, a exposição das subtarefas visuais em Operações, a retomada de uma geração interrompida, widgets adicionais e qualquer capacidade privilegiada. Alterações de arquivos do projeto, acesso a segredos e publicação exigiriam ferramentas e autorização próprias.
-- Os testes Node simulam as respostas do modelo, inclusive uma tentativa inválida seguida de correção. O teste no Edge usa respostas simuladas em MOCK e executa o componente React compilado de fato no navegador.
+## Validação no notebook
+
+No PowerShell, com Node da versão indicada em `.nvmrc` e Chrome ou Edge instalado:
+
+```powershell
+npm.cmd ci
+npm.cmd run lint
+npm.cmd run typecheck
+npm.cmd run typecheck:web
+npm.cmd run build
+npm.cmd run build:web
+npm.cmd test
+$env:VOID_BROWSER_EXECUTABLE = 'C:/Program Files/Google/Chrome/Application/chrome.exe'
+npm.cmd run test:web:browser
+```
+
+1. Inicie `npm.cmd run dev:web` e abra `http://127.0.0.1:3030`. Envie “Crie uma interface com um contador de expedições e um checklist de equipamentos”. Incremente e marque o item. Feche a janela e solicite “Reabra a janela do contador de expedições”.
+2. Para LIVE, configure `OPENROUTER_API_KEY` localmente, inicie `npm.cmd run dev:web:live` e selecione esforço High. Pergunte “Quais agentes você possui?” e solicite “Crie um painel interativo de despesas, com formulário de lançamento, total e gráfico. Comece sem lançamentos”.
+3. Abra Operações e verifique a etapa `agent-renderer` e os modelos servidos por Renderer e DevAgent. Teste o formulário e o gráfico. Na mesma sessão, compare “Abra as configurações”, “Onde posso personalizar você?” e “Não abra as configurações”. Confirme a intenção interpretada e o efeito real na interface.
+
+Os testes Node e de navegador usam respostas de modelo simuladas. O teste da prévia executa o código em Chrome real. Os passos de LIVE exigem credencial gratuita válida e disponibilidade dos modelos.

@@ -1,3 +1,4 @@
+import type { UiAction } from "../web/ui-contracts.js";
 import type { ExecutionFailure } from "./failure.js";
 
 export type TaskStatus = "running" | "pending" | "completed" | "failed" | "cancelled";
@@ -7,6 +8,7 @@ export interface AgentTask {
     id: string;
     agentId: string;
     objective: string;
+    requiredCapability?: string;
     status: TaskStatus;
     createdAt: Date;
     updatedAt: Date;
@@ -17,6 +19,7 @@ export interface AgentResult {
     taskId: string;
     agentId: string;
     result: unknown;
+    action?: UiAction;
     status: resultStatus;
     error?: string;
     failure?: ExecutionFailure;

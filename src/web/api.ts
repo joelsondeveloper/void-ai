@@ -356,7 +356,7 @@ export function createWebApi(runtime: WebRuntime, port: () => number, voice: Ret
           if (existing) {
             if (existing.request !== text) conflict("Identificador já utilizado nesta sessão.");
           } else {
-            if (!main.localCommand(text, runtime.permissions)) checkAvailable(level);
+            checkAvailable(level);
             if (jobs.has(sessionId)) conflict("A sessão já está em processamento.");
             if (!conversations.beginTurn(sessionId, id, text)) conflict("Identificador já utilizado.");
             start(sessionId, id, null, async (signal, sink) => {

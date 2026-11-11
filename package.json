@@ -23,7 +23,7 @@
     "build:web": "next build web --webpack",
     "start:web": "node --env-file-if-exists=.env --import tsx web/server.mjs",
     "start:web:live": "node --env-file-if-exists=.env --import tsx web/server.mjs --live",
-    "test:web:browser": "node --test web/browser/*.test.mjs",
+    "test:web:browser": "node --import tsx --test web/browser/*.test.mjs",
     "lint": "biome lint src tests web/app web/browser web/server.mjs"
   },
   "repository": {
@@ -51,6 +51,7 @@
     "esbuild": "0.28.2",
     "next": "^16.4.5",
     "react": "^19.3.1",
-    "react-dom": "^19.3.1"
+    "react-dom": "^19.3.1",
+    "react-reconciler": "0.34.0"
   }
 }

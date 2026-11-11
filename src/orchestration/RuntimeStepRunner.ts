@@ -8,6 +8,7 @@ export function createRuntimeStepRunner(
   runtime: AgentRuntime,
   context: AgentContext,
   includeDependencyResults = false,
+  maxDelegations = 0,
 ): StepRunner {
   return async (step, dependencies = []) => {
     if (step.requiredCapability && !context.permissions.has(step.requiredCapability)) {
@@ -31,7 +32,8 @@ export function createRuntimeStepRunner(
       updatedAt: now,
     };
 
-    const result = await runtime.execute(task, context);
+    if (step.requiredCapability) task.requiredCapability = step.requiredCapability;
+    const result = await runtime.execute(task, context, maxDelegations);
 
     if (result.status === "failed") {
       if (result.failure) throw new ExecutionError(result.failure, result.error);
@@ -42,6 +44,6 @@ export function createRuntimeStepRunner(
       throw new ExecutionError({ category: "invalid_response", message: `Step ${step.id} returned an invalid result`, retryable: false });
     }
 
-    return result.result;
+    return result.action ? { content: result.result, action: result.action } : result.result;
   };
 }

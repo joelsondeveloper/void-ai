@@ -50,13 +50,15 @@ export interface ModelRoute {
     readonly reasoning?: ModelReasoning;
 }
 
-export type SpecialistRoute = "dev-agent" | "research-agent";
-export type ModelRoutes = Readonly<Record<"decision" | "synthesis" | SpecialistRoute, ModelRoute>>;
+export type ModelRoutes = Readonly<Record<string, ModelRoute>> & {
+    readonly decision: ModelRoute;
+    readonly synthesis: ModelRoute;
+};
 
 export interface ServedModel {
     providerId: string;
     requested: string;
     returned: string;
-    role: "decision" | "synthesis" | SpecialistRoute | "specialist";
+    role: string;
     stepId?: string;
 }

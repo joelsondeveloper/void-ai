@@ -1,7 +1,9 @@
 import type { AgentIdentity, ExecutableAgent } from "../types/agent.js";
-import type { AgentOperation, OperationHandler } from "./AgentOperation.js";
+import type { AgentOperation, OperationHandler, ModelTool } from "./AgentOperation.js";
 
 interface RegisteredOperation {
+  operation: AgentOperation<unknown, unknown>;
+  tools: readonly ModelTool[];
   agentId: string;
   capability: string;
   callers: ReadonlySet<string>;
@@ -20,8 +22,13 @@ export class AgentRegistry {
   ): void {
     if (this.operations.has(operation)) throw new Error("Agent operation is already registered.");
     if (!this.agents.has(operation.agentId)) throw new Error("Register the operation owner first.");
+    const names = new Set(Array.from(this.operations.values()).flatMap(entry => entry.tools.map(tool => tool.name)));
+    for (const tool of operation.tools) {
+      if (names.has(tool.name)) throw new Error("Model tool is already registered.");
+      names.add(tool.name);
+    }
     this.operations.set(operation, { agentId: operation.agentId, capability: operation.capability,
-      callers: new Set(callers), handler });
+      callers: new Set(callers), operation: operation as unknown as AgentOperation<unknown, unknown>, tools: operation.tools, handler });
   }
 
   operationFor<Input, Output>(operation: AgentOperation<Input, Output>, caller: string): OperationHandler<Input, Output> | undefined {
@@ -51,6 +58,19 @@ export class AgentRegistry {
       ...this.list().flatMap(({ definition }) => this.get(definition.id) ? definition.capabilities : []),
       ...Array.from(this.operations.values(), ({ capability }) => capability),
     ]);
+  }
+
+  modelToolFor(name: string, caller: string, permissions: ReadonlySet<string>) {
+    for (const entry of this.operations.values()) {
+      const tool = entry.tools.find(tool => tool.name === name);
+      if (tool && entry.callers.has(caller) && permissions.has(entry.capability)) return { tool, operation: entry.operation };
+    }
+    return undefined;
+  }
+
+  toolCatalog(caller: string, permissions: ReadonlySet<string>): readonly ModelTool[] {
+    return Array.from(this.operations.values()).filter((entry) =>
+      entry.callers.has(caller) && permissions.has(entry.capability)).flatMap((entry) => entry.tools);
   }
 
   catalog(caller: string, permissions: ReadonlySet<string>) {
