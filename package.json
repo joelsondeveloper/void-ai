@@ -15,6 +15,7 @@
     "chat:void": "tsx src/examples/mainAgent.ts",
     "chat:void:live": "node --env-file-if-exists=.env --import tsx src/examples/mainAgent.ts --live",
     "benchmark:models:live": "node --env-file-if-exists=.env --import tsx src/examples/mainAgent.ts --benchmark",
+    "benchmark:tools:live": "node --env-file-if-exists=.env --import tsx src/examples/benchmarkTools.ts",
     "benchmark:research:live": "node --env-file-if-exists=.env --import tsx src/examples/benchmarkResearch.ts",
     "start": "node dist/index.js",
     "dev:web": "node --env-file-if-exists=.env --import tsx web/server.mjs --dev",
