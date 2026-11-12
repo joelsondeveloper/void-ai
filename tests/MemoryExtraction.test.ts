@@ -256,3 +256,36 @@ test("asking to forget removes the record and the extractor does not put it back
   assert.deepEqual(stored(memory), []);
   assert.deepEqual(messages[0], { type: "memory", text: "Memória: apaguei 1 registro." });
 });
+
+test("a tool call written out as text is removed from the reply; ordinary brackets are not", async () => {
+  const { withoutToolEcho } = await import("../src/conversation/persona.js");
+  const tools = ["remember", "recall", "forget", "ui_switchMode"];
+  assert.equal(withoutToolEcho('[remember "Prefere respostas curtas e diretas", "profile"] Anotei. Quer alguma coisa agora?', tools), "Anotei. Quer alguma coisa agora?");
+  assert.equal(withoutToolEcho('[recall "trabalho"] [forget id] Pronto, esqueci.', tools), "Pronto, esqueci.");
+  assert.equal(withoutToolEcho('Ação: chamar remember com text "Trabalha na Florarte"\nAnotei. Dia puxado aí?', tools), "Anotei. Dia puxado aí?");
+  assert.equal(withoutToolEcho("Workspace aberto. [ui_switchMode workspace]", tools), "Workspace aberto.");
+  // Text that only looks similar stays: other brackets, the word inside a sentence, a tool that is not offered.
+  for (const text of ["Use o array [1, 2, 3] no exemplo.", "Posso lembrar disso com remember.", '[ask_dev "analise"] fica como veio', "[remembering] não é chamada"]) {
+    assert.equal(withoutToolEcho(text, tools), text);
+  }
+  assert.equal(withoutToolEcho('[remember "x"]', tools), '[remember "x"]', "a reply that is only the echo is not emptied");
+  assert.equal(withoutToolEcho('[remember "x"] Anotei.', []), '[remember "x"] Anotei.', "nothing to recognize without tools");
+});
+
+test("when the model writes the call instead of making it, the user sees a clean reply and the fact is saved anyway", async (t) => {
+  // What the real model answered when asked to remember, with no tool call at all.
+  const echoed = '[remember "Prefere respostas curtas e diretas", "profile"] Anotei. Quer alguma coisa agora?';
+  const { ask, memory } = agent(t, file(), (request) => {
+    for (let length = 1; length <= echoed.length; length += 7) request.onText?.(echoed.slice(0, length));
+    return echoed;
+  });
+  const { messages, request } = await ask("lembra que eu prefiro respostas curtas e diretas", { stream: true });
+  assert.equal(usedTool(request), false, "no real tool call happened");
+  const drafts = messages.flatMap((message) => message.type === "draft" ? [message.text] : []);
+  assert.ok(drafts.length > 0);
+  assert.ok(drafts.every((text) => !/[[\]]|remember/.test(text)), "the written call never flashes on screen");
+  assert.deepEqual(messages.filter(({ type }) => type !== "draft"), [
+    { type: "memory", text: "Memória: salvei “O usuário prefere respostas curtas e diretas.”." },
+    { type: "final", text: "Anotei. Quer alguma coisa agora?" }]);
+  assert.deepEqual(stored(memory), [["fact", "explicit", "prefere:respostas-curtas-e-diretas", "O usuário prefere respostas curtas e diretas."]]);
+});

@@ -3,7 +3,8 @@ import type { ConversationStore, ConversationTurn } from "../conversation/Conver
 import { parseDecision, validateDelegations, type MainDecision } from "../conversation/mainDecision.js";
 import { applyExtracted, claimsSaved, extractMemories } from "../conversation/memoryExtractor.js";
 import { memoryLimits, type MemoryStore } from "../conversation/MemoryStore.js";
-import { chatSystemPrompt, decisionMemoryPrompt, ignoreSentinel, memoryBlockFor, resolvePersona, type MemoryBlock } from "../conversation/persona.js";
+import { chatSystemPrompt, decisionMemoryPrompt, ignoreSentinel, memoryBlockFor, resolvePersona, withoutToolEcho,
+  type MemoryBlock } from "../conversation/persona.js";
 import { parseSynthesis, renderResults } from "../conversation/synthesis.js";
 import { runToolLoop } from "../conversation/toolLoop.js";
 import { callBudget, describeMemoryCommit, memoryTools, operationTools, specialistTools, type CallBudget, type MemoryCommit,
@@ -448,7 +449,8 @@ export class MainAgent {
       ...(memoryTurn?.tools ?? []),
     ];
 
-    const system = chatSystemPrompt(this.persona, { voice, tools: tools.map(({ spec }) => spec.name),
+    const toolNames = tools.map(({ spec }) => spec.name);
+    const system = chatSystemPrompt(this.persona, { voice, tools: toolNames,
       ...(memory ? { memory: { block: memoryPrompt, tools: !!memoryTurn } } : {}) });
 
     let draft = "";
@@ -463,7 +465,8 @@ export class MainAgent {
       // The silence marker of a voice turn must never flash on screen.
       if (voice && ignoreSentinel.startsWith(content.trim())) return;
       if (content && draft && performance.now() - lastPreviewAt < 100) return;
-      show(content);
+      // A call written out as text is dropped from the preview too, while it is still being typed.
+      show(withoutToolEcho(content, toolNames).replace(/\[[^\]\n]*$/, ""));
     };
 
     try {
@@ -499,7 +502,8 @@ export class MainAgent {
       }));
       this.reportDecision({ trace, requestedModel: route.model, ...(returnedModel ? { returnedModel } : {}),
         outcome: result.toolCalls > 0 ? "tool" : "direct" });
-      let content = result.content;
+      // The model sometimes writes a call as text ("[remember \"x\"] Anotei.") instead of making it. The user never sees that.
+      let content = withoutToolEcho(result.content, toolNames);
       // The turn is ending without the interface action a plain command asked for: the model answered in text
       // (sometimes claiming it had opened it) or gave up after a bad call. The host runs the command itself, and its
       // result replaces the model's text.
