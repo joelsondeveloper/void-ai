@@ -56,3 +56,11 @@ Em transcrições de voz, o modelo responde exatamente `<ignore/>` para ruído d
 - **Os especialistas continuam sem ferramentas próprias.** `DevAgent` e `ResearchAgent` ainda são um prompt sobre um modelo, com limite de 180 palavras. O formato novo está pronto para recebê-las, mas elas não existem.
 - **Modelos gratuitos.** As rotas LIVE continuam restritas a modelos `:free`, e nem todos suportam tools. Antes de adotar o modo, confira `supported_parameters` no catálogo e rode prompts reais.
 - **Fora desta fase:** jobs assíncronos (`start_job`, `check_job`, `cancel_job`) sobre o `PlanExecutor`, e memória persistente entre sessões.
+
+## Ferramentas de interface
+
+As operações `ui.*` (abrir/fechar painel, trocar modo, restaurar layout, renderizar componente) chegam ao modelo como
+`ui_openWindow`, `ui_closeWindow`, `ui_switchMode`, `ui_resetLayout` e `ui_render`. Cada uma declara um JSON Schema real
+(`parameters`, com enums de modo e de painel) e um resumo em português (`summary`) em `src/web/ui-runtime.ts`; sem isso o
+modelo recebia um objeto vazio e errava os argumentos. O prompt do modo tools acrescenta que o Void controla a interface e
+que um erro de ferramenta nunca justifica afirmar sucesso. Regressão: `tests/UiTools.test.ts`.

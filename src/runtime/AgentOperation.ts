@@ -45,6 +45,9 @@ export interface ModelTool<Input = unknown> {
   name: string;
   description: string;
   example: { name: string; arguments: object };
+  /** Optional JSON Schema and Portuguese summary used when the tool is offered through native tool calling. */
+  parameters?: Readonly<Record<string, unknown>>;
+  summary?: string;
   accepts: (value: unknown) => boolean;
   prepare: (value: unknown, resources: ModelToolResources) => Input;
 }
