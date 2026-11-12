@@ -19,6 +19,7 @@ import { DevAgent } from "../agents/DevAgent.js";
 import { MainAgent, type MainMessage } from "../agents/MainAgent.js";
 import { ResearchAgent } from "../agents/ResearchAgent.js";
 import { SQLiteConversationStore } from "../conversation/ConversationStore.js";
+import { claimsSaved } from "../conversation/memoryExtractor.js";
 import { SQLiteMemoryStore } from "../conversation/MemoryStore.js";
 import { SQLiteCheckpointStore } from "../governance/CheckpointStore.js";
 import { ExecutionGovernance } from "../governance/ExecutionGovernance.js";
@@ -36,7 +37,9 @@ import { UiRuntimeService } from "../web/ui-runtime.js";
 
 interface Candidate { id: string; reasoning: "optional" | "mandatory" | "none"; expires?: string }
 interface Call { ms: number; tools: string[]; output?: number; reasoning?: number; failure?: string }
-interface Outcome { scenario: string; pass: boolean; note: string; calls: number; ms: number; failures: string[] }
+interface Outcome { scenario: string; pass: boolean; note: string; calls: number; failures: string[];
+  /** Time each successful provider call took, without the pacing wait between calls. */
+  latencies: number[] }
 
 const zero = (value: unknown) => value === 0 || (typeof value === "string" && /^0(?:\.0+)?$/.test(value));
 
@@ -105,7 +108,7 @@ async function measure(candidate: Candidate, key: string, directory: string, pac
   const definitions = registry.list().map(({ definition }) => definition);
   const main = new MainAgent(router, registry, governance, conversations, {
     ...defaults, conversationMode: "tools", memory, componentCatalog: (sessionId) => components.catalog(sessionId),
-    routesForEffort: (effort) => ({ ...liveModelRoutes(effort, {}, definitions), decision: route, synthesis: route }),
+    routesForEffort: (effort) => ({ ...liveModelRoutes(effort, {}, definitions), conversation: route, decision: route, synthesis: route }),
     specialist: (task, context, maxDelegations) => runtime.execute(task, context, maxDelegations),
     tool: (call, resources, context, maxTasks) => runtime.invokeTool("main-agent", call, resources, context, { maxTasks }),
   });
@@ -114,7 +117,6 @@ async function measure(candidate: Candidate, key: string, directory: string, pac
   async function scenario(name: string, sessionId: string, message: string,
     judge: (run: { final: string; messages: MainMessage[]; tools: string[] }) => [boolean, string]) {
     const from = calls.length;
-    const startedAt = performance.now();
     const messages: MainMessage[] = [];
     await main.run({ sessionId, message, effort: "low", context: { executionId: sessionId, permissions,
       signal: AbortSignal.timeout(120_000), budgetLimit: 0, metadata: {} } }, (event) => { messages.push(event); });
@@ -123,8 +125,9 @@ async function measure(candidate: Candidate, key: string, directory: string, pac
     const error = messages.find((event) => event.type === "error");
     const [pass, note] = error ? [false, "erro: " + (error.type === "error" ? error.failure.category + (error.failure.code ? ":" + error.failure.code : "") : "")]
       : judge({ final, messages, tools: used.flatMap(({ tools }) => tools) });
-    const outcome: Outcome = { scenario: name, pass, note, calls: used.length, ms: Math.round(performance.now() - startedAt),
-      failures: used.flatMap(({ failure }) => failure ? [failure] : []) };
+    const outcome: Outcome = { scenario: name, pass, note, calls: used.length,
+      failures: used.flatMap(({ failure }) => failure ? [failure] : []),
+      latencies: used.flatMap(({ failure, ms }) => failure ? [] : [ms]) };
     outcomes.push(outcome);
     console.log(JSON.stringify({ model: candidate.id, ...outcome, reply: final.replace(/\s+/g, " ").slice(0, 140) }));
   }
@@ -142,12 +145,13 @@ async function measure(candidate: Candidate, key: string, directory: string, pac
       [action(messages).some((item) => item.type === "open_panel" && item.panel === "usage"), tools.join(",") || "não chamou ferramenta"]);
     await scenario("lembrar a pedido", "a", "lembra que eu prefiro respostas curtas e diretas", ({ tools }) =>
       [tools.includes("remember"), tools.join(",") || "não chamou remember"]);
-    await scenario("menção de passagem", "a", "trabalho na Florarte, mas hoje tô cansado", ({ final, tools }) =>
-      [!!final, tools.includes("remember") ? "chamou remember" : /anot|salv|guard|lembr/i.test(final) ? "disse que anotou sem chamar remember" : "não chamou remember"]);
+    // Not the sentence of the prompt's own example, or the model would only be copying the example's reply.
+    await scenario("menção de passagem", "a", "ah, eu moro em Olinda, por isso perguntei do trânsito ontem", ({ final, tools }) =>
+      [!!final, tools.includes("remember") ? "chamou remember" : claimsSaved(final) ? "disse que anotou sem chamar remember" : "não chamou remember"]);
     // The host capture may have failed with the turn above; the recall scenario needs the fact either way.
     memory.remember({ kind: "profile", topic: "trabalho", text: "O usuário trabalha na Florarte.", origin: "extracted" });
     await scenario("usar a memória em sessão nova", "b", "onde eu trabalho?", ({ final }) => [/florarte/i.test(final), ""]);
-    outcomes.push({ scenario: "resumo da sessão anterior", pass: memory.list("summary").length > 0, note: "", calls: 0, ms: 0, failures: [] });
+    outcomes.push({ scenario: "resumo da sessão anterior", pass: memory.list("summary").length > 0, note: "", calls: 0, failures: [], latencies: [] });
   } finally {
     conversations.close(); memory.close(); checkpoints.close(); components.close();
   }
@@ -172,8 +176,7 @@ try {
       catch (error) { console.log(JSON.stringify({ model: candidate.id, aborted: describeFailure(error).category })); }
     }
     const by = (name: string) => all.filter(({ scenario }) => scenario === name);
-    const turns = all.filter(({ calls }) => calls > 0);
-    const latencies = turns.map(({ ms, calls }) => ms / calls).sort((a, b) => a - b);
+    const latencies = all.flatMap((outcome) => outcome.latencies).sort((a, b) => a - b);
     const mention = by("menção de passagem");
     summary.push({
       modelo: candidate.id, raciocínio: candidate.reasoning, ...(candidate.expires ? { expira: candidate.expires } : {}),
@@ -181,7 +184,8 @@ try {
       ...Object.fromEntries(scored.map((name) => [name, `${by(name).filter(({ pass }) => pass).length}/${rounds}`])),
       "menção: chamou remember": `${mention.filter(({ note }) => note === "chamou remember").length}/${rounds}`,
       "menção: disse que anotou sem gravar": `${mention.filter(({ note }) => note.startsWith("disse que anotou")).length}/${rounds}`,
-      "ms por chamada (mediana)": latencies.length ? Math.round(latencies[Math.floor(latencies.length / 2)] ?? 0) : null,
+      "ms por chamada (mediana)": latencies.length ? latencies[Math.floor(latencies.length / 2)] ?? null : null,
+      "ms por chamada (pior)": latencies.at(-1) ?? null,
       chamadas: all.reduce((sum, { calls }) => sum + calls, 0),
       falhas: [...new Set(all.flatMap(({ failures }) => failures))].join(" ") || "-",
     });
