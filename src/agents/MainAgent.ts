@@ -5,7 +5,7 @@ import { memoryLimits, type MemoryStore } from "../conversation/MemoryStore.js";
 import { chatSystemPrompt, ignoreSentinel, memoryBlockFor, resolvePersona } from "../conversation/persona.js";
 import { parseSynthesis, renderResults } from "../conversation/synthesis.js";
 import { runToolLoop } from "../conversation/toolLoop.js";
-import { callBudget, memoryTools, operationTools, specialistTools, type CallBudget, type SpecialistRunner,
+import { callBudget, describeMemoryCommit, memoryTools, operationTools, specialistTools, type CallBudget, type SpecialistRunner,
   type TurnAction } from "../conversation/voidTools.js";
 import type { ExecutionGovernance, PlanningUsage } from "../governance/ExecutionGovernance.js";
 import { validUsage } from "../governance/modelPolicy.js";
@@ -28,6 +28,8 @@ export type MainMessage =
   | { type: "ui"; text: string; action: UiAction; executionId?: undefined }
   | { type: "draft"; text: string; executionId?: undefined }
   | { type: "generation_warning"; text: string; executionId?: undefined }
+  /** What the turn changed in the persistent memory, so the user can see it and correct it. */
+  | { type: "memory"; text: string; executionId?: undefined }
   | { type: "initial"; text: string; executionId: string; specialists: string[] }
   | { type: "progress"; text: string; executionId: string; chatText?: string; agentId?: string; stepId?: string }
   | { type: "approval_required"; text: string; executionId: string; reason?: ProgressEvent["reason"];
@@ -454,11 +456,16 @@ export class MainAgent {
       try {
         this.conversations.recordDirect(input.sessionId, message, result.content, input.turnId, servedModel, actions.length > 0);
       } catch { this.issue("history"); }
+      let memoryNotice: string | undefined;
       if (memoryTurn) {
-        try { if (memoryTurn.commit().failed) this.issue("memory"); }
-        catch { this.issue("memory"); }
+        try {
+          const changes = memoryTurn.commit();
+          if (changes.failed) this.issue("memory");
+          memoryNotice = describeMemoryCommit(changes);
+        } catch { this.issue("memory"); }
       }
       for (const { text, action } of actions) emit({ type: "ui", text, action });
+      if (memoryNotice) emit({ type: "memory", text: memoryNotice });
       emit({ type: "final", text: result.content });
       return { kind: "direct" };
     } catch (error) {

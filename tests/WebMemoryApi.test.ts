@@ -123,3 +123,39 @@ test("the web runtime hands the same store to the conversation, so what the API 
   assert.equal(result.kind, "direct");
   assert.match(prompts[0] ?? "", /Perfil:\n- Se chama Joelson/);
 });
+
+test("what a turn saved shows up in the chat as a notice under that turn", async (t) => {
+  const previous = process.env.VOID_CONVERSATION_MODE;
+  process.env.VOID_CONVERSATION_MODE = "tools";
+  t.after(() => { if (previous === undefined) delete process.env.VOID_CONVERSATION_MODE; else process.env.VOID_CONVERSATION_MODE = previous; });
+  const directory = mkdtempSync(join(tmpdir(), "void-memory-notice-"));
+  const runtime = createWebRuntime({ filename: join(directory, "web.sqlite"), mock: { id: "web-demo", async generate(request) {
+    const tool = request.messages.at(-1)?.role === "tool";
+    return tool ? { model: request.model, content: "Fechado.", usage: { inputTokens: 1, outputTokens: 1 } }
+      : { model: request.model, content: "", usage: { inputTokens: 1, outputTokens: 1 },
+        toolCalls: [{ id: "c1", name: "remember", arguments: JSON.stringify({ text: "Prefere respostas curtas" }) }] };
+  } } });
+  t.after(() => { runtime.close(); rmSync(directory, { recursive: true, force: true }); });
+  const api = createWebApi(runtime, () => port);
+  async function send(method: string, path: string, payload?: object) {
+    const request = Object.assign(Readable.from(payload ? [Buffer.from(JSON.stringify(payload))] : []), {
+      url: path, method, headers: { host: "127.0.0.1:" + port, ...(method === "GET" ? {} : { origin, "content-type": "application/json" }) },
+    });
+    const response = capture();
+    await api(request, response);
+    return { status: response.status, json: response.body ? JSON.parse(response.body) : undefined };
+  }
+  const session = (await send("POST", "/api/sessions", {})).json.id as string;
+  const turnId = crypto.randomUUID();
+  assert.equal((await send("POST", `/api/sessions/${session}/messages`, { id: turnId, message: "prefiro respostas curtas", effort: "auto" })).status, 202);
+  let snapshot: { active: unknown; notices: { turnId: string; type: string; chatText?: string }[]; turns: { response: string | null }[] } | undefined;
+  for (let attempt = 0; attempt < 200; attempt++) {
+    snapshot = (await send("GET", `/api/sessions/${session}`)).json;
+    if (!snapshot?.active && snapshot?.turns[0]?.response) break;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.equal(snapshot?.turns[0]?.response, "Fechado.");
+  assert.deepEqual(snapshot?.notices.map(({ turnId: id, type, chatText }) => ({ id, type, chatText })),
+    [{ id: turnId, type: "memory", chatText: "Memória: salvei “Prefere respostas curtas”." }]);
+  assert.deepEqual(runtime.memory.list().map(({ text }) => text), ["Prefere respostas curtas"]);
+});

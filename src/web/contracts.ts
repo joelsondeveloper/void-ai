@@ -24,7 +24,7 @@ export interface Notice {
   id: string;
   turnId: string;
   at: string;
-  type: "initial" | "progress" | "approval_required" | "action" | "generation_warning";
+  type: "initial" | "progress" | "approval_required" | "action" | "generation_warning" | "memory";
   text: string;
   executionId?: string;
   stepId?: string;

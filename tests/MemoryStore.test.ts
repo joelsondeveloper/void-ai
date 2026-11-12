@@ -131,6 +131,29 @@ for (const mode of ["fts5", "fallback"] as const) {
     assert.deepEqual(store.search("mora"), []);
   });
 
+  test(`[${mode}] update replaces the text in place, re-indexes it and validates like add`, (t) => {
+    const store = open(t, mode);
+    const record = store.add({ kind: "fact", text: "Mora em Recife", sessionId: "s1" }).record;
+    const other = store.add({ kind: "fact", text: "Gosta de café" }).record;
+    const updated = store.update(record.id, "Mora em Olinda");
+    assert.deepEqual({ ...updated, updatedAt: "" }, { ...record, text: "Mora em Olinda", updatedAt: "" });
+    assert.ok(updated.updatedAt > record.updatedAt);
+    assert.deepEqual(store.get(record.id), updated);
+    assert.deepEqual(store.search("olinda").map(({ id }) => id), [record.id]);
+    assert.deepEqual(store.search("recife"), []);
+    // The old text is free again and the new one is taken.
+    assert.equal(store.add({ kind: "fact", text: "mora em recife" }).created, true);
+    rejects(() => store.update(record.id, "gosta de CAFÉ!"), "invalid");
+    assert.throws(() => store.update(record.id, "gosta de café"), new RegExp(`id ${other.id}`));
+    rejects(() => store.update(record.id, "senha: hunter22"), "secret");
+    rejects(() => store.update(record.id, "x".repeat(301)), "too_long");
+    rejects(() => store.update("00000000-0000-4000-8000-000000000000", "ok"), "not_found");
+    rejects(() => store.update("nope", "ok"), "not_found");
+    assert.equal(store.get(record.id)?.text, "Mora em Olinda");
+    // Updating to the same text (or a case variant of it) is allowed.
+    assert.equal(store.update(record.id, "MORA EM OLINDA").text, "MORA EM OLINDA");
+  });
+
   test(`[${mode}] records and summary marks survive reopening the file`, (t) => {
     const filename = file(t);
     const first = open(t, mode, filename);

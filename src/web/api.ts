@@ -232,7 +232,9 @@ export function createWebApi(runtime: WebRuntime, port: () => number, voice: Ret
         append(sessionId, { turnId, type: message.type, text: message.text,
           ...(message.executionId ? { executionId: message.executionId } : {}),
           ...(message.type === "progress" && message.stepId ? { stepId: message.stepId } : {}),
-          ...(message.type === "progress" && message.chatText ? { chatText: message.chatText } : {}) });
+          ...(message.type === "progress" && message.chatText ? { chatText: message.chatText } : {}),
+          // Memory changes show up in the chat, under the turn that made them.
+          ...(message.type === "memory" ? { chatText: message.text } : {}) });
       }
       notify(sessionId);
     };

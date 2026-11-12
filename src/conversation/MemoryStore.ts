@@ -57,6 +57,11 @@ export interface MemoryStore {
   check(input: MemoryInput): MemoryRecord | undefined;
   /** Throws MemoryError when the text is empty, too long, looks like a secret or the store is full. */
   add(input: MemoryInput): MemoryWrite;
+  /**
+   * Replaces the text of a record, keeping its id, kind and creation date. Same validation as add. Throws
+   * MemoryError not_found for an unknown id and invalid when another record already holds the same text.
+   */
+  update(id: string, text: string): MemoryRecord;
   get(id: string): MemoryRecord | undefined;
   /** Oldest first. */
   list(kind?: MemoryKind): MemoryRecord[];
@@ -184,6 +189,21 @@ export class SQLiteMemoryStore implements MemoryStore {
       const record: MemoryRecord = { id, kind, text, createdAt: at, updatedAt: at,
         ...(sourceTurnId ? { sourceTurnId } : {}), ...(sessionId ? { sessionId } : {}) };
       return { record, created: true, removed };
+    });
+  }
+
+  update(id: string, text: string): MemoryRecord {
+    return this.transaction(() => {
+      const current = this.get(id);
+      if (!current) throw new MemoryError("not_found", "Não existe registro com esse id.");
+      const clean = cleanText(current.kind, text);
+      const normalized = normalizeMemoryText(clean);
+      const other = this.db.prepare("SELECT id FROM memory_records WHERE normalized = ? AND id <> ?").get(normalized, id);
+      if (other) throw new MemoryError("invalid", `Já existe outro registro com esse texto (id ${String(other.id)}). Apague um dos dois com forget.`);
+      const at = this.now().toISOString();
+      this.db.prepare("UPDATE memory_records SET text = ?, normalized = ?, updated_at = ? WHERE id = ?").run(clean, normalized, at, id);
+      if (this.searchMode === "fts5") this.db.prepare("UPDATE memory_fts SET body = ? WHERE id = ?").run(clean, id);
+      return { ...current, text: clean, updatedAt: at };
     });
   }
 
