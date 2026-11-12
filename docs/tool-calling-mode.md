@@ -155,7 +155,10 @@ que um erro de ferramenta nunca justifica afirmar sucesso. Regressão: `tests/Ui
 
 Abrir a interface não depende só do modelo. `interfaceCommand` (`src/web/ui-intents.ts`) reconhece uma mensagem que é
 apenas um comando de interface ("abre o workspace", "volta pro anel", "abre as configurações", "restaure o layout").
-O modelo continua sendo consultado primeiro, como em qualquer mensagem. Se o turno terminaria sem a ação (resposta em
-texto, afirmação falsa de sucesso, saída inválida ou falha do provedor), o MainAgent executa a operação registrada pelo
-mesmo caminho do registro, nos dois modos de conversa, e o resultado dela substitui o texto do modelo. No Focus, o overlay
-de comando tem o botão **Abrir workspace**, que não passa por modelo nenhum.
+O modelo continua sendo consultado primeiro, como em qualquer mensagem, mas o turno sempre termina com a ação daquele
+comando e só ela. Se o modelo respondeu em texto, afirmou sucesso sem agir, devolveu algo inválido, não pôde ser
+alcançado ou abriu outra coisa (um modelo real respondeu "abre o workspace" abrindo o painel de sessões), o MainAgent
+executa a operação registrada pelo mesmo caminho do registro, nos dois modos de conversa, e o resultado dela substitui o
+que o modelo fez e disse. Se o modelo produziu exatamente a ação pedida, a fala dele é mantida. No modo tools a espera
+pelo modelo nesse tipo de turno é de 5 s (`shortcutWaitMs`); depois disso a chamada é cancelada e o host executa. No
+Focus, o overlay de comando tem o botão **Abrir workspace**, que não passa por modelo nenhum.

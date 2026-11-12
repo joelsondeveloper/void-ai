@@ -4,10 +4,12 @@ The experimental terminal labels every reply as MOCK or LIVE. MOCK is determinis
 
 ## Profiles
 
-| Effort | Main decision | Main synthesis | Development | Research |
-| --- | --- | --- | --- | --- |
-| low | Nemotron 3.5 Super VL · reasoning off | Super VL · reasoning off | North Mini Code | Ultra · none |
-| medium / high / max | Nemotron 3.5 Super VL · reasoning off | Super VL · reasoning off | North Mini Code | Ultra · none |
+| Effort | Main conversation (tools mode) | Main decision (JSON coordinator) | Main synthesis | Development | Research |
+| --- | --- | --- | --- | --- | --- |
+| low | Nemotron 3 Ultra · reasoning off | Nemotron 3.5 Super VL · reasoning off | Super VL · reasoning off | North Mini Code | Ultra · none |
+| medium / high / max | Nemotron 3 Ultra · reasoning off | Nemotron 3.5 Super VL · reasoning off | Super VL · reasoning off | North Mini Code | Ultra · none |
+
+The LIVE web server and terminal talk in the tools mode by default, so the conversation route is the model the user actually talks to. It was chosen by measurement, see [Medição do modo tools](#medição-do-modo-tools). `VOID_MAIN_MODEL` overrides both Main columns. Ultra does not accept `response_format`, which is why the JSON coordinator keeps Super VL.
 
 Auto resolves to low. Super VL and Dots advertise JSON support and accept disabling reasoning. New LIVE routes omit the optional output cap by default so the serving endpoint applies its limits. The adapter checks context using a conservative text size estimate and clamps explicit output caps using catalog metadata. Call, step, concurrency, and explicit budget checks remain active.
 
@@ -136,3 +138,56 @@ A leitura de novas respostas finais vem habilitada. O navegador guarda a escolha
 Ao usar a voz do sistema, o navegador seleciona apenas vozes pt-BR que ele identifica como locais. A disponibilidade, a pronúncia e a naturalidade dependem do navegador, do sistema e dos pacotes de idioma instalados. A opção automática usa o nome da voz como indício de preferência por uma voz masculina quando possível. A Web Speech API não fornece gênero. A leitura depende de uma interação com a página. Se o navegador bloquear o áudio, use **Reproduzir resposta**. Referências: [vozes disponíveis](https://developer.mozilla.org/en-US/docs/Web/API/SpeechSynthesis/getVoices) e [serviço local](https://developer.mozilla.org/en-US/docs/Web/API/SpeechSynthesisVoice/localService).
 
 Pendência observada no teste anterior. O VOID delegou a dois especialistas, a síntese automática falhou e o chat exibiu os resultados completos. Esse caminho continua disponível em texto. A leitura inclui respostas diretas validadas e sínteses validadas de execuções concluídas. A investigação da falha de síntese fica para outra fase.
+
+## Medição do modo tools
+
+Em 12 de novembro de 2026, `npm run benchmark:tools:live` (`src/examples/benchmarkTools.ts`) mediu os modelos gratuitos do OpenRouter no que a conversa padrão exige. O script lê o catálogo público, pega todo modelo `:free` com preço zero que lista `tools` (fora o alias `openrouter/free` e o que expira em menos de uma semana) e roda cada um pelo `MainAgent`, com o prompt e a lista de ferramentas de produção, esforço `low`, raciocínio desligado onde o catálogo permite e sem fallback. As redes de segurança do host ficam de fora para não esconder o comportamento do modelo: sem o atalho de interface, e só contam como chamada as tool calls que o próprio modelo fez.
+
+Sete cenários pontuam, um ponto cada por rodada:
+
+| Cenário | Mensagem | Passa quando |
+| --- | --- | --- |
+| conversa | "bom dia, tudo certo por aí?" | responde em português, sem chamar ferramenta |
+| explicação | diferença entre concorrência e paralelismo, em duas frases | cita os dois termos, sem delegar |
+| abrir workspace | "abre o workspace" | o modelo chama `ui_switchMode` com `workspace` |
+| abrir painel | "mostra o painel de uso" | o modelo chama `ui_openWindow` com `usage` |
+| lembrar a pedido | "lembra que eu prefiro respostas curtas e diretas" | o modelo chama `remember` |
+| usar a memória em sessão nova | "onde eu trabalho?", com o fato no bloco | a resposta cita a Florarte |
+| resumo da sessão anterior | primeiro turno da sessão nova | o resumo foi gravado |
+
+Um oitavo cenário, menção de passagem ("ah, eu moro em Olinda, por isso perguntei do trânsito ontem"), é só informativo: registra se o modelo chamou `remember` sozinho ou se disse que anotou sem chamar.
+
+### Resultado
+
+Três rodadas para os cinco primeiros, uma para os demais. Latência é o tempo de cada chamada ao provedor, sem a pausa entre chamadas, medida nas rodadas 2 e 3.
+
+| Modelo | Acertos | Chama `remember` a pedido | Latência mediana / pior | Observação |
+| --- | --- | --- | --- | --- |
+| `nvidia/nemotron-3-ultra-550b-a55b:free` | **21/21** | 3/3 | 1,7 s / 12,0 s | Único a passar em tudo. Numa menção de passagem chamou `remember` 1 vez em 3. |
+| `cohere/north-mini-code:free` | 18/21 | 0/3 | 0,55 s / 1,7 s | O mais rápido. Diz "Anotei." sem chamar a ferramenta. |
+| `liquid/lfm-3-1.7b:free` | 18/21 | 3/3 | 1,65 s / 5,6 s | Raciocínio obrigatório: o resumo estourou o teto de saída nas 3 rodadas, com falhas `incomplete`. |
+| `nvidia/nemotron-3.5-lightning:free` | 17/21 | 0/3 | 0,63 s / 3,4 s | |
+| `nvidia/nemotron-3.5-super-vl:free` | 16/21 | 0/3 | 0,91 s / 4,5 s | Padrão anterior. Em "abre o workspace" abriu painéis em vez do workspace em 2 de 3 rodadas. |
+| `dots-studio/dots-3-note-preview:free` | 4/7 | 0/1 | não medida | Afirmou "Abrindo o workspace." sem chamar ferramenta. Expira em 31/12/2026. |
+| `baidu/ernie-5.5-flash-preview:free` | 3/7 | 0/1 | não medida | Afirmou "Workspace aberto." sem chamar ferramenta. |
+| `thinkingmachines/inkling-2-small:free` | 0/7 | | | HTTP 403 em todas as chamadas. |
+| `recursive/flint-v1.0:free` | 0/7 | | | HTTP 404 em todas as chamadas. |
+| `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free` | 0/7 | | | HTTP 404 em todas as chamadas. |
+| `google/gemma-4-26b-a4b-it:free` | 0/21 | | | HTTP 429 do provedor nas três rodadas. Não foi possível medir. |
+| `google/gemma-4-31b-it:free` | 0/21 | | | HTTP 429 do provedor nas três rodadas. Não foi possível medir. |
+
+`liquid/lfm-2.5-2.6b:free` ficou de fora porque expirava em 13/11/2026.
+
+### Decisão
+
+A conversa em modo tools passa a usar o Nemotron 3 Ultra, com raciocínio desligado, pela rota nova `conversation`. Foi o único modelo que acertou todos os cenários e o único grande que chama as tools de memória, que continuam necessárias para esquecer e atualizar (`forget`, `update_memory`).
+
+O Ultra **não** substituiu o modelo do coordenador JSON. Ele não lista `response_format`, e o benchmark existente do coordenador (`npm run benchmark:models:live`) falhou com ele no primeiro cenário, com `decision_json`. Por isso `decision` e `synthesis` continuam no Super VL, e o modo tools cai para esse coordenador quando o modelo da conversa não aceita tools ou sai do catálogo gratuito.
+
+O que a medição não sustenta:
+
+- **Amostra pequena.** Três rodadas por modelo. A diferença entre o Ultra e os demais é consistente num cenário (chamar `remember`), mas 21 pontos não medem variação fina.
+- **Latência.** O Ultra é cerca de duas vezes mais lento que o Super VL na mediana e teve uma chamada de 12 s. Fora do benchmark, na verificação de ponta a ponta do mesmo dia, turnos inteiros levaram de 3 a 29 s. Quem preferir velocidade pode definir `VOID_MAIN_MODEL=cohere/north-mini-code:free`: a memória continua sendo gravada pela captura do host e os comandos de interface continuam garantidos.
+- **Concentração.** O Ultra já era o modelo do ResearchAgent. Conversa e pesquisa agora dependem da mesma rota gratuita e dos mesmos limites.
+- **Não medidos.** Delegação a especialistas, criação de componentes, voz e respostas longas não entraram nos cenários.
+- **Catálogo muda.** Modelos gratuitos entram e saem. Repita `npm run benchmark:tools:live` antes de trocar o padrão de novo; `VOID_BENCH_MODELS` restringe a lista e `VOID_BENCH_ROUNDS` repete as rodadas.

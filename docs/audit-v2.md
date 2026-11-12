@@ -163,3 +163,40 @@ No modo MOCK, só as frases exatas de `src/web/demo-provider.ts:6` funcionam ("m
 - `docs/ui-runtime.md` manda usar o Node "da versão indicada em `.nvmrc`". O arquivo não existe.
 - Os commits recentes das branches estão em português; o pedido pede commits em inglês. Os commits desta rodada estão em inglês.
 - O pedido descreve o merge como provável fonte de conflitos em cinco arquivos. Só `docs/tool-calling-mode.md` conflitou.
+
+## Depois da auditoria
+
+O texto acima descreve o estado no commit `08c1ac6` e fica como estava. Esta seção registra o que mudou em seguida na `feat/v2-integration`.
+
+| # | Achado | O que foi feito | Onde |
+| --- | --- | --- | --- |
+| 1 | Resumo falhava em toda sessão nova | A chamada leva `route.reasoning`. No máximo três tentativas por sessão anterior em cada execução. `VOID_DEBUG_MEMORY=1` registra a categoria da falha. Confirmado ao vivo: o resumo passou a ser gravado. | `MainAgent.summarizePrevious` |
+| 2 | Workspace dependia só do modelo | Uma mensagem que é só um comando de interface sempre produz a ação daquele comando, nos dois modos. O modelo é consultado primeiro; se demorar mais de 5 s, falhar, responder em texto ou abrir outra coisa, o host executa. Botão "Abrir workspace" no overlay do Focus. | `src/web/ui-intents.ts`, `MainAgent`, `console.tsx` |
+| 3 | Gravação dependia de `remember` | Captura do host no fim de todo turno, sem chamada de modelo. | `src/conversation/memoryExtractor.ts`, `MainAgent.settleMemory` |
+| 4 | Aviso de memória invisível na web | O aviso fica embaixo da resposta do turno. | `console.tsx` |
+| 5 | "Anotei." sem gravação | Causa encontrada na medição: os exemplos do prompt mostravam a chamada dentro da fala (`VOID: [remember "x"] Anotei.`) e o modelo copiava a notação como texto. Exemplos reescritos, eco removido da resposta e da prévia, e o aviso "Memória: nada foi salvo nesta resposta." quando a afirmação é falsa. | `persona.ts`, `MainAgent` |
+| 6 | Falhas de memória silenciosas na web | O runtime web registra as falhas internas no console. | `src/web/runtime.ts` |
+| 7 | Sem FTS5 nesta máquina | Sem mudança de código. Os testes do caminho FTS5 são pulados com motivo; esse caminho continua sem verificação aqui. | `tests/support/sqliteTemp.ts` |
+| 9 | Modo JSON não gravava | A captura do host roda nos dois modos. As tools de memória continuam só no modo tools. | `MainAgent.settleMemory` |
+
+Também mudou:
+
+- **Registros.** Ganharam `origin` (`explicit`, `extracted`, `summary`) e `topic` opcional, com um registro por tema. Bancos existentes são migrados ao abrir. A migração foi conferida numa cópia do banco real.
+- **Modelo da conversa.** Rota nova `conversation`, com o Nemotron 3 Ultra, escolhido por medição. O coordenador JSON e a síntese ficaram no Super VL. Detalhes e limites da medição em `docs/model-routing.md`, seção "Medição do modo tools".
+
+### Decisões tomadas sem especificação
+
+O pedido desta rodada chegou cortado no meio da seção 2.2, antes de descrever a segunda via de captura, a frente do workspace e a do modelo. Estas escolhas foram minhas e podem ser revistas:
+
+- **Extrator determinístico, não uma chamada de modelo.** Não gasta cota, não falha por limite de requisições e é testável. O custo é a cobertura: só um conjunto fechado de formas de frase. Um extrator por modelo pode ser acrescentado depois, usando o mesmo ponto de entrada.
+- **Sem os tipos projeto, pessoa e preferência.** O código só tinha `profile`, `fact` e `summary`, e o pedido mandava manter os existentes. Projetos, pessoas e preferências entram como `fact` com tema próprio (`projeto:…`, `pessoa:…`, `prefere:…`).
+- **Modelo primeiro nos comandos de interface.** `tests/IntegrationAudit.test.ts` fixa que frases conhecidas também passam pelo modelo, então o host é rede de segurança, não atalho. Executar direto, sem modelo, seria instantâneo e não gastaria cota, mas contraria esse teste; é uma decisão de produto.
+- **A tela inicial continua sendo o anel.** O teste de navegador exige o Focus sem barra nem menu, e a documentação diz que recarregar volta ao Focus. O que mudou foi haver um caminho garantido para sair dele.
+
+### O que continua em aberto
+
+- Sem painel de memória na interface web. A API já existe.
+- O caminho FTS5 não pôde ser exercitado nesta máquina.
+- A âncora das tools de memória compara palavras, não sentido.
+- No modo JSON, um comando de interface espera o modelo o tempo normal do turno; a espera curta de 5 s só vale no modo tools.
+- Uma transcrição de voz que o modelo não dispense como ruído passa pela captura como qualquer mensagem.
