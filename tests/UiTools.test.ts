@@ -181,3 +181,22 @@ test("a recognized call the registry would not accept changes nothing: the model
   assert.deepEqual(await ask("abre o painel secreto"), [{ type: "final", text: "Não sei abrir isso." }]);
   assert.equal(requests.length, 1);
 });
+
+// Seen with the real conversation model: "abre o workspace" was answered by opening the sessions panel.
+for (const mode of ["tools", "decision"] as const) {
+  test(`[${mode}] "abre o workspace" opens the workspace even when the model opens something else`, async (t) => {
+    const { ask } = fixture(t, (request) => mode === "decision"
+      ? { content: JSON.stringify({ mode: "tool", call: { name: "ui.openWindow", arguments: { component: "sessions" } } }) }
+      : hasResult(request) ? { content: "Aberto. O painel de sessões tá na tela agora." }
+        : { toolCalls: [call("ui_openWindow", { component: "sessions" })] },
+    { conversationMode: mode, shortcut: interfaceCommand });
+    assert.deepEqual(await ask("abre o workspace"), opened);
+  });
+}
+
+test("when the model opens the workspace and something more, only the action that was asked for reaches the interface", async (t) => {
+  const { ask } = fixture(t, (request) => hasResult(request) ? { content: "Workspace aberto." }
+    : { toolCalls: [call("ui_openWindow", { component: "sessions" }, "call_1"), call("ui_switchMode", { mode: "workspace" }, "call_2")] },
+  { shortcut: interfaceCommand });
+  assert.deepEqual(await ask("abre o workspace"), [opened[0], { type: "final", text: "Workspace aberto." }]);
+});

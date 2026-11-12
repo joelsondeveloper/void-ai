@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import type { ConversationStore, ConversationTurn } from "../conversation/ConversationStore.js";
 import { parseDecision, validateDelegations, type MainDecision } from "../conversation/mainDecision.js";
 import { applyExtracted, claimsSaved, extractMemories } from "../conversation/memoryExtractor.js";
@@ -336,9 +337,10 @@ export class MainAgent {
         return rescue(error);
       }
       this.reportDecision({ ...diagnostic, outcome: decision.mode });
-      // A plain interface command the model answered in text, delegated or dismissed is still run, by the host.
-      const toolCall = decision.mode === "tool" ? decision.call : decision.mode === "display"
-        ? { name: "ui.render", arguments: { brief: message, display: decision.schema } } : plain;
+      // A message that was nothing but an interface command runs that command, whatever the model decided: answered
+      // in text, delegated, dismissed, or chose another operation.
+      const toolCall = plain ?? (decision.mode === "tool" ? decision.call : decision.mode === "display"
+        ? { name: "ui.render", arguments: { brief: message, display: decision.schema } } : undefined);
       if (decision.mode === "ignore" && !toolCall) return { kind: "ignored" };
       if (toolCall && this.options.tool) {
         const signal = this.visualSignal(input.context.signal, limits, planning);
@@ -510,13 +512,16 @@ export class MainAgent {
         outcome: result.toolCalls > 0 ? "tool" : "direct" });
       // The model sometimes writes a call as text ("[remember \"x\"] Anotei.") instead of making it. The user never sees that.
       let content = withoutToolEcho(result.content, toolNames);
-      // The turn is ending without the interface action a plain command asked for: the model answered in text
-      // (sometimes claiming it had opened it) or gave up after a bad call. The host runs the command itself, and its
-      // result replaces the model's text.
-      if (c.plain && actions.length === 0) {
+      // A message that was nothing but an interface command gets exactly that command's action. The model may have
+      // answered in text (sometimes claiming it had opened it), given up after a bad call, or opened something else:
+      // a real model answered "abre o workspace" by opening the sessions panel. Unless it produced the very same
+      // action, the host's result replaces what the model did and said.
+      if (c.plain) {
         const outcome = await this.invokeShortcut(input, c.plain, limits);
+        const did = outcome.action !== undefined && actions.some(({ action }) => isDeepStrictEqual(action, outcome.action));
+        if (!did) content = outcome.response;
+        actions.length = 0;
         if (outcome.action) actions.push({ text: outcome.response, action: outcome.action });
-        content = outcome.response;
       }
       // Background noise leaves no trace: no history and nothing the memory tools staged.
       if (voice && content === ignoreSentinel) return { kind: "ignored" };
