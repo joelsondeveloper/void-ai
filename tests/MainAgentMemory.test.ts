@@ -365,3 +365,21 @@ test("a changed fact is updated in place instead of piling up contradicting reco
   assert.match(system((await ask("onde eu moro? olinda?")).request), /- Mora em Olinda/);
 });
 
+test("a passing mention is saved without being asked, and recall finds it later by its Portuguese stem", async (t) => {
+  const filename = setup(t);
+  const { ask, memory } = agent(t, filename, (request) => {
+    const user = request.messages.at(-1)?.content ?? "";
+    const result = lastTool(request);
+    if (user.startsWith("trabalho na Florarte")) return { toolCalls: [call("remember", { text: "Trabalha na Florarte" })] };
+    if (user === "onde eu trabalho?") return { toolCalls: [call("recall", { query: "onde eu trabalho" })] };
+    if (result?.startsWith("Anotado")) return "Anotei. Dia puxado aí?";
+    if (result?.startsWith("Registros")) return /Trabalha na Florarte/.test(result) ? "Na Florarte." : "Não achei.";
+    return "ok";
+  });
+  const first = await ask("trabalho na Florarte, mas hoje estou cansado");
+  assert.deepEqual(first.messages, [{ type: "memory", text: "Memória: salvei “Trabalha na Florarte”." },
+    { type: "final", text: "Anotei. Dia puxado aí?" }]);
+  assert.deepEqual(memory.list().map(({ text }) => text), ["Trabalha na Florarte"]);
+  const later = await ask("onde eu trabalho?", { sessionId: "nova" });
+  assert.deepEqual(later.messages.at(-1), { type: "final", text: "Na Florarte." });
+});
