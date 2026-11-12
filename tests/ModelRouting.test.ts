@@ -55,6 +55,15 @@ test("free routing follows each effort and auto resolves conservatively", () => 
   assert.deepEqual(auto.reasoning, { enabled: false });
   assert.equal(liveModelRoutes("low", { VOID_MAIN_REASONING_EFFORT_LOW: "default" }).decision.reasoning, undefined);
   assert.equal(liveModelRoutes("high", {}).decision.maxOutputTokens, undefined);
+  // The tool-calling conversation has its own default, chosen by measurement (docs/model-routing.md), with reasoning
+  // off as measured. The JSON coordinator keeps its model: Ultra does not accept response_format.
+  for (const level of ["low", "medium", "high", "max"] as const) {
+    assert.deepEqual(liveModelRoutes(level, {}).conversation, { providerId: "openrouter", model: freeModelIds.ultra, reasoning: { enabled: false } });
+  }
+  // VOID_MAIN_MODEL is the user's choice for the MainAgent and applies to both.
+  const chosen = liveModelRoutes("low", { VOID_MAIN_MODEL: freeModelIds.north });
+  assert.deepEqual([chosen.decision.model, chosen.conversation?.model], [freeModelIds.north, freeModelIds.north]);
+  assert.throws(() => liveModelRoutes("low", { VOID_MAIN_MODEL: "vendor/paid" }), /modelo :free/);
 });
 
 test("per-role, per-effort overrides stay isolated and reject unsafe configuration", () => {

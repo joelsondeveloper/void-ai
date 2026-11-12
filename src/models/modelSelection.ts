@@ -57,9 +57,10 @@ export function selectOpenRouterRoutes(effort: ExplicitEffort, env: NodeJS.Proce
     const suppressReasoning = model === freeModelIds.ultra &&
       (role === "RESEARCH" || (role === "SYNTHESIS" && effort === "medium"));
     const requestedEffort = config("REASONING_EFFORT");
+    // Ultra as the conversation model was measured with reasoning off, which the catalog lists as optional for it.
     const quickStructuredRoute = (role === "MAIN" || role === "SYNTHESIS") &&
-      (model === freeModelIds.superVl || ((effort === "low" || effort === "medium") &&
-        (model === freeModelIds.dots || model === freeModelIds.lightning)));
+      (model === freeModelIds.superVl || (role === "MAIN" && model === freeModelIds.ultra) ||
+        ((effort === "low" || effort === "medium") && (model === freeModelIds.dots || model === freeModelIds.lightning)));
     const disableReasoning = quickStructuredRoute && requestedEffort === undefined && reasoningMax === undefined;
     const reasoningEffort = requestedEffort ??
       (suppressReasoning && reasoningMax === undefined ? "none" : undefined);
@@ -83,6 +84,11 @@ export function selectOpenRouterRoutes(effort: ExplicitEffort, env: NodeJS.Proce
   const decision = route("MAIN", freeModelIds.superVl);
   return {
     decision,
+    // The tool-calling conversation has its own default, chosen by measurement (docs/model-routing.md, "Medição do
+    // modo tools"): Ultra was the only free model to pass every scenario of `npm run benchmark:tools:live` in three
+    // rounds. It stays out of `decision` because it does not accept response_format and failed the JSON coordinator.
+    // VOID_MAIN_MODEL overrides both.
+    conversation: route("MAIN", freeModelIds.ultra),
     synthesis: route("SYNTHESIS", freeModelIds.superVl),
     ...Object.fromEntries(agents.flatMap(({ id, model }) => model
       ? [[id, route(model.configKey, model.fallback)]] : [])),

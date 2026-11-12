@@ -187,6 +187,9 @@ export class MainAgent {
       if (configured) this.validateRoutes(configured);
       const routes = configured ? structuredClone(configured) : undefined;
       const decisionRoute = routes?.decision ?? this.defaultRoute();
+      // The tool-calling conversation may run on another model than the JSON coordinator: what makes a model good at
+      // one (tool calls) is not what the other needs (strict JSON).
+      const conversationRoute = routes?.conversation ?? decisionRoute;
       // A message that is nothing but a registered interface command ("abre o workspace"). The model is asked first,
       // like for any other message; the host runs the command itself only when the turn would end without the action.
       const candidate = this.options.tool && tools.length ? this.options.shortcut?.(message) : undefined;
@@ -197,15 +200,18 @@ export class MainAgent {
       };
       if (this.mode === "tools") {
         try {
-          return await this.converse({ input, message, emit, effort, limits, routes, route: decisionRoute, plain });
+          return await this.converse({ input, message, emit, effort, limits, routes, route: conversationRoute, plain });
         } catch (error) {
-          // The model cannot take tools. Nothing was shown yet, so the strict-JSON path can still answer.
-          if (describeFailure(error).code !== "tools_unsupported") return rescue(error);
+          // The conversation model cannot take tools, or the catalog no longer lists it as free (free routes come
+          // and go). Nothing was shown yet, so the strict-JSON path can still answer, on the coordinator's own model.
+          const { code } = describeFailure(error);
+          const gone = code === "free_price_unverified" && conversationRoute.model !== decisionRoute.model;
+          if (code !== "tools_unsupported" && !gone) return rescue(error);
           // Never fall back silently: without this line the new mode would look like it does nothing.
-          if (!this.warnedModels.has(decisionRoute.model)) {
-            this.warnedModels.add(decisionRoute.model);
-            console.warn(`VOID: o modelo ${decisionRoute.model} não suporta tools; usando o coordenador JSON. ` +
-              "Defina VOID_MAIN_MODEL com um modelo que liste tools no catálogo do OpenRouter.");
+          if (!this.warnedModels.has(conversationRoute.model)) {
+            this.warnedModels.add(conversationRoute.model);
+            console.warn(`VOID: o modelo ${conversationRoute.model} ${gone ? "não está no catálogo gratuito" : "não suporta tools"}; ` +
+              "usando o coordenador JSON. Defina VOID_MAIN_MODEL com um modelo que liste tools no catálogo do OpenRouter.");
           }
         }
       }

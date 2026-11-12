@@ -16,6 +16,7 @@ import { ExecutionGovernance } from "../src/governance/ExecutionGovernance.js";
 import { ModelRouter } from "../src/models/ModelRouter.js";
 import { AgentRegistry } from "../src/runtime/AgentRegistry.js";
 import { AgentRuntime } from "../src/runtime/AgentRuntime.js";
+import { ExecutionError } from "../src/types/failure.js";
 import type { ModelRequest, ModelToolCall } from "../src/types/model.js";
 import { tempDirectory } from "./support/sqliteTemp.js";
 
@@ -288,4 +289,31 @@ test("when the model writes the call instead of making it, the user sees a clean
     { type: "memory", text: "Memória: salvei “O usuário prefere respostas curtas e diretas.”." },
     { type: "final", text: "Anotei. Quer alguma coisa agora?" }]);
   assert.deepEqual(stored(memory), [["fact", "explicit", "prefere:respostas-curtas-e-diretas", "O usuário prefere respostas curtas e diretas."]]);
+});
+
+test("the tool-calling conversation runs on its own route; the JSON coordinator and the tools fallback keep theirs", async (t) => {
+  const route = (model: string) => ({ providerId, model, maxOutputTokens: 1600 });
+  const routes = { decision: route("json-model"), synthesis: route("summary-model"), conversation: route("chat-model") };
+  const reply = (request: ModelRequest) => request.responseFormat === "json_object"
+    ? JSON.stringify({ mode: "direct", response: "ok" }) : "ok";
+
+  const tools = agent(t, file(), reply, { routesForEffort: () => routes });
+  assert.equal((await tools.ask("oi")).request?.model, "chat-model");
+
+  const json = agent(t, file(), reply, { routesForEffort: () => routes, conversationMode: "decision" });
+  assert.equal((await json.ask("oi")).request?.model, "json-model");
+
+  // Without a conversation route the tools mode uses the coordinator's, as before.
+  const single = agent(t, file(), reply, { routesForEffort: () => ({ decision: routes.decision, synthesis: routes.synthesis }) });
+  assert.equal((await single.ask("oi")).request?.model, "json-model");
+
+  // A conversation model that cannot take tools falls back to the JSON coordinator on the coordinator's own model.
+  t.mock.method(console, "warn", () => {});
+  const fallback = agent(t, file(), (request) => {
+    if (request.model === "chat-model") throw new ExecutionError({ category: "permission_denied", code: "tools_unsupported", message: "sem tools", retryable: false });
+    return reply(request);
+  }, { routesForEffort: () => routes });
+  const turn = await fallback.ask("oi");
+  assert.deepEqual(turn.messages, [{ type: "final", text: "ok" }]);
+  assert.equal(turn.request?.model, "json-model");
 });
