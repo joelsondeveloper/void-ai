@@ -404,6 +404,17 @@ test("Focus · the workspace opens by the overlay button and by a plain sentence
   await page.locator(".focus-orbit .singularity").waitFor();
 });
 
+test("Workspace · what a turn saved to the memory stays visible under the answer", { timeout: 40_000 }, async (t) => {
+  const page = await open(t, { width: 1280, height: 800 });
+  await enterWorkspace(page);
+  await command(page, "eu moro em Recife");
+  await page.locator(".assistant-message").first().waitFor();
+  await page.locator(".notice.memory").getByText("Memória: salvei “O usuário mora em Recife.”.").waitFor();
+  await command(page, "bom dia");
+  await page.locator(".assistant-message").nth(1).waitFor();
+  assert.equal(await page.locator(".notice.memory").count(), 1, "the notice belongs to its turn and stays after the next one");
+});
+
 test("LIVE without a provider rejects semantic chat dispatch", { timeout: 45_000 }, async (t) => {
   const live = await startServer(join(directory, "live.sqlite"), "LIVE");
   liveServer = live.server;

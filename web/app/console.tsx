@@ -607,6 +607,8 @@ export function Console() {
           setSelected(suggestion.id); openPanel("operations");
         }}>Ver execução pendente</button>}
         {latest?.failure && <p role="status">{failureText(latest.failure, latest.failureDetail)}</p>}
+        {latest && current?.notices.filter((notice) => notice.turnId === latest.id && notice.type === "memory").map((notice) =>
+          <p className="muted" role="status" key={notice.id}>{notice.text}</p>)}
         {latest && reply && !activeTurnId && <details className="focus-reply"><summary>Última resposta</summary>
           <p className="prewrap">{reply}</p>
           {voiceState?.enabled && <button className="button" type="button" onClick={() => voice.current?.play(latest.id, reply)}>
@@ -666,7 +668,7 @@ export function Console() {
                   <div className="user-message"><span className="kicker">Você</span><p className="prewrap">{turn.request}</p></div>
                   {turn.introduction && <div className="assistant-message"><span className="kicker">VOID</span><p>{turn.introduction}</p></div>}
                   {turn.response === null && !turn.failure &&
-                    current?.notices.filter((notice) => notice.turnId === turn.id &&
+                    current?.notices.filter((notice) => notice.turnId === turn.id && notice.type !== "memory" &&
                       (notice.chatText || (notice.type === "generation_warning" && current.active?.turnId === turn.id))).map((notice) =>
                       <div className="notice progress" key={notice.id}><span className="signal"/><p>{notice.chatText ?? notice.text}</p></div>)}
                   {turn.response && <div className="assistant-message"><span className="kicker">VOID{turn.model ? " · " + turn.model : ""}</span>
@@ -676,6 +678,9 @@ export function Console() {
                         (voiceState.provider === "local" && !voiceState.voices.length)}
                       onClick={() => voice.current?.play(turn.id, reply)}>Reproduzir resposta</button>}
                   </div>}
+                  {/* What the turn changed in the memory stays under the answer. It arrives after the reply is recorded. */}
+                  {current.notices.filter((notice) => notice.turnId === turn.id && notice.type === "memory").map((notice) =>
+                    <div className="notice memory" key={notice.id} role="status"><span className="signal"/><p>{notice.text}</p></div>)}
                   {turn.response === "" && <p className="kicker">Fala ignorada</p>}
                   {!turn.response && !turn.failure && current?.active?.turnId === turn.id && current.active.draft &&
                     <div className="assistant-message"><span className="kicker">VOID · Gerando</span><p className="prewrap">{current.active.draft}</p></div>}
