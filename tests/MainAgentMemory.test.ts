@@ -304,6 +304,39 @@ test("a failing summary is not fatal: the turn answers normally and the next new
   assert.deepEqual(memory.list("summary").map(({ text, sessionId }) => [text, sessionId]), [["Resumo certo.", "b"]]);
 });
 
+test("the summary call carries the route's reasoning setting, like every conversation call", async (t) => {
+  // Regression for the real run: without `reasoning: { enabled: false }` the model spent the whole 400-token cap
+  // thinking, the provider reported an output-limit failure and no summary was ever stored.
+  const filename = setup();
+  const route = { providerId, model: "main", maxOutputTokens: 1600, reasoning: { enabled: false as const } };
+  const { ask, requests } = agent(t, filename, (request) => isSummary(request) ? "Resumo." : "ok",
+    { routesForEffort: () => ({ decision: route, synthesis: route }) });
+  await ask("primeira sessão", { sessionId: "a" });
+  await ask("oi", { sessionId: "b" });
+  const [summary, conversation] = requests.slice(-2);
+  assert.ok(summary && isSummary(summary));
+  assert.deepEqual(summary.reasoning, { enabled: false });
+  assert.deepEqual(conversation?.reasoning, { enabled: false });
+});
+
+test("a summary that keeps failing for one session is retried three times at most, then left alone", async (t) => {
+  const filename = setup();
+  let attempts = 0;
+  let noise = false;
+  const { ask } = agent(t, filename, (request) => {
+    if (isSummary(request)) { attempts++; throw new Error("output limit"); }
+    return noise ? "<ignore/>" : "ok";
+  });
+  await ask("primeira sessão", { sessionId: "a" });
+  noise = true;
+  // A voice turn answered with the silence marker leaves no history, so each of these is again the first turn of
+  // "b" and would summarize "a" once more.
+  for (let turn = 0; turn < 5; turn++) {
+    assert.equal((await ask("hm", { sessionId: "b", source: "voice" })).result.kind, "ignored");
+  }
+  assert.equal(attempts, 3);
+});
+
 test("a summary that looks like a secret is not stored, and is not retried on every session", async (t) => {
   const filename = setup();
   let calls = 0;

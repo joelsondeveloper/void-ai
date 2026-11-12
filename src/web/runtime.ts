@@ -92,6 +92,8 @@ export function createWebRuntime(options: {
     // strict-JSON coordinator. MOCK keeps the coordinator because its local provider only understands that format.
     ...(options.live && !process.env.VOID_CONVERSATION_MODE ? { conversationMode: "tools" as const } : {}),
     ...defaults, routesForEffort: routes, componentCatalog: (sessionId) => components.catalog(sessionId), memory,
+    // Failures the user never sees (a summary that did not come, a memory write refused) at least reach the server log.
+    onCommunicationIssue: (kind) => { console.warn(`VOID web: falha interna (${kind}); a conversa seguiu sem essa parte.`); },
     specialist: (task, context, maxDelegations) => agentRuntime.execute(task, context, maxDelegations),
     tool: (call, resources, context, maxTasks) => agentRuntime.invokeTool("main-agent", call, resources, context, {
       maxTasks,

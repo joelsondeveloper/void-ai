@@ -100,6 +100,7 @@ const toolTurnTimeoutMs = 180_000;
 const summaryTimeoutMs = 20_000;
 const summaryTokens = 400;
 const summaryTurns = 12;
+const summaryAttempts = 3;
 
 const summaryPrompt = [
   "VOID_SUMMARY. Resuma a conversa abaixo, entre o usuário e o VOID, para servir de memória em conversas futuras.",
@@ -138,6 +139,8 @@ export class MainAgent {
   private readonly warnedModels = new Set<string>();
   /** Sessions whose summary is being written, so two new sessions opened at once do not both summarize it. */
   private readonly summarizing = new Set<string>();
+  /** Failed summary attempts per previous session, in this process. */
+  private readonly summaryFailures = new Map<string, number>();
 
   constructor(
     private readonly router: ModelRouter,
@@ -490,8 +493,11 @@ export class MainAgent {
       done = c.memory.summarizedTurns(previous.id);
     } catch { this.issue("memory"); return 0; }
     if (previous.turns.length <= done || this.summarizing.has(previous.id)) return 0;
+    // A summary that keeps failing for the same session stops being retried in this process: each attempt costs a
+    // request of the free quota, and a deterministic failure would repeat on every new session.
+    if ((this.summaryFailures.get(previous.id) ?? 0) >= summaryAttempts) return 0;
     const maxOutputTokens = outputLimit(Math.min(summaryTokens, c.route.maxOutputTokens ?? summaryTokens), c.limits.outputTokens);
-    if (maxOutputTokens !== undefined && maxOutputTokens < 1) return 0;
+    if (maxOutputTokens !== undefined && maxOutputTokens <= (c.route.reasoning?.maxTokens ?? 0)) return 0;
     // Only when two calls are still left for the conversation itself after this one.
     if (!c.budget.take(2)) return 0;
     const { id } = previous;
@@ -504,6 +510,9 @@ export class MainAgent {
         this.governance.planRequest(this.router, c.route.providerId, {
           model: c.route.model, ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
           ...(c.route.temperature === undefined ? {} : { temperature: c.route.temperature }),
+          // The route's reasoning setting must travel with the call. Without it a reasoning model spends the whole
+          // output cap thinking and the provider reports an output-limit failure instead of a summary.
+          ...(c.route.reasoning === undefined ? {} : { reasoning: c.route.reasoning }),
           messages: [{ role: "system", content: summaryPrompt }, { role: "user", content: transcript }],
         }, c.limits, AbortSignal.any([c.signal, AbortSignal.timeout(summaryTimeoutMs)])));
       const spent = validUsage(response.usage) ? response.usage.outputTokens : maxOutputTokens ?? 0;
@@ -514,10 +523,16 @@ export class MainAgent {
       try { c.memory.add({ kind: "summary", text, sessionId: id }); }
       catch { this.issue("memory"); }
       c.memory.markSummarized(id, previous.turns.length);
+      this.summaryFailures.delete(id);
       return spent;
     } catch (error) {
       // A user cancel still cancels the turn. Anything else only costs the summary; the next new session retries.
       c.signal.throwIfAborted();
+      this.summaryFailures.set(id, (this.summaryFailures.get(id) ?? 0) + 1);
+      if (process.env.VOID_DEBUG_MEMORY === "1") {
+        const { category, code } = describeFailure(error);
+        console.error(`VOID [memory-summary] sessão=${id} falhou: ${category}${code ? ":" + code : ""}`);
+      }
       this.issue("memory");
       return error instanceof ExecutionError && validUsage(error.usage) ? error.usage.outputTokens : 0;
     } finally {
