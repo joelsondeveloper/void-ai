@@ -15,6 +15,8 @@ export interface ConversationStore {
   find(sessionId: string, executionId: string): ConversationTurn | undefined;
   complete(sessionId: string, executionId: string, response: string, ui?: boolean): void;
   pending(sessionId: string): string[];
+  /** The most recently active other session with answered turns, and those turns in order. Used for summaries. */
+  previousSession?(sessionId: string): { id: string; turns: { request: string; response: string }[] } | undefined;
 }
 
 export class SQLiteConversationStore implements ConversationStore {
@@ -145,6 +147,20 @@ export class SQLiteConversationStore implements ConversationStore {
       UPDATE conversation_turns SET response = ?, failure = NULL, ui = ?
       WHERE session_id = ? AND execution_id = ? AND response IS NULL
     `).run(response, ui ? 1 : 0, sessionId, executionId);
+  }
+
+  previousSession(sessionId: string): { id: string; turns: { request: string; response: string }[] } | undefined {
+    const row = this.db.prepare(`
+      SELECT session_id FROM conversation_turns
+      WHERE session_id <> ? AND response <> '' AND ui = 0 ORDER BY rowid DESC LIMIT 1
+    `).get(sessionId);
+    if (typeof row?.session_id !== "string") return undefined;
+    const turns = this.db.prepare(`
+      SELECT request, response FROM conversation_turns
+      WHERE session_id = ? AND response <> '' AND ui = 0 ORDER BY rowid
+    `).all(row.session_id).flatMap(({ request, response }) =>
+      typeof request === "string" && typeof response === "string" ? [{ request, response }] : []);
+    return { id: row.session_id, turns };
   }
 
   pending(sessionId: string): string[] {
