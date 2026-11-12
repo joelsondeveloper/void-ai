@@ -9,6 +9,7 @@ import { FloatingWindow } from "./window-manager";
 import { Icon, ringLabels, SingularityRing, type RingState } from "./singularity";
 import { Workspace } from "./workspace";
 import { ProviderPanel } from "./provider-panel";
+import { MemoryPanel } from "./memory-panel";
 import { browserVoice, finalReply, type VoiceController, type VoiceState } from "./voice-controller";
 import { browserVoiceInput, type InputState, type VoiceInput } from "./voice-input";
 
@@ -565,6 +566,7 @@ export function Console() {
     minimize={() => setMinimized(true)} restore={() => setMinimized(false)} close={() => closePanel(panel)}>
     {panel === "settings" && settings}
     {panel === "usage" && <ProviderPanel/>}
+    {panel === "memory" && <MemoryPanel/>}
     {panel === "sessions" && <div className="session-panel">{sessionList}</div>}
     {panel === "operations" && operations}
     {panel === "display" && <DynamicDisplay schema={layout.display}/>}
@@ -588,18 +590,16 @@ export function Console() {
         </button>
       </div>
       <span className="sr-only" role="status">{ringLabels[state]} · {micStatus}</span>
+      {/* The one manual way out of Focus. It asks no model anything. */}
+      <button className="focus-enter" type="button" onClick={() => applyLayout({ type: "switch_mode", mode: "workspace" })}>
+        <Icon name="workspace"/> Abrir workspace
+      </button>
       {commandOpen && <section className="command-overlay" aria-label="Comando de texto e voz">
         <div className="command-heading">
           <h1>Comando</h1>
-          <div className="command-tools">
-            {/* The way into the full interface that does not depend on a model understanding the request. */}
-            <button className="button" type="button" onClick={() => applyLayout({ type: "switch_mode", mode: "workspace" })}>
-              <Icon name="workspace"/> Abrir workspace
-            </button>
-            <button className="icon-button" type="button" aria-label="Fechar comando" onClick={() => {
-              setCommandOpen(false); focusTrigger.current?.focus();
-            }}><Icon name="close"/></button>
-          </div>
+          <button className="icon-button" type="button" aria-label="Fechar comando" onClick={() => {
+            setCommandOpen(false); focusTrigger.current?.focus();
+          }}><Icon name="close"/></button>
         </div>
         {feedback}
         {commandForm}
@@ -637,6 +637,7 @@ export function Console() {
             <span className="workspace-mode"><Icon name="workspace"/> Workspace</span>
             <button type="button" aria-haspopup="dialog" onClick={() => openPanel("settings")}>Configurações</button>
             <button type="button" aria-haspopup="dialog" onClick={() => openPanel("usage")}>Uso</button>
+            <button type="button" aria-haspopup="dialog" onClick={() => openPanel("memory")}>Memória</button>
           </div>
         </div>
       </header>

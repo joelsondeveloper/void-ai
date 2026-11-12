@@ -34,7 +34,7 @@ export function parseDecision(content: unknown, stepLimit: number, allowIgnore =
     return { mode: "display", schema: value.schema };
   }
   if (value.mode === "tool" && hasOnly(value, ["mode", "call"]) && isWindowToolCall(value.call) &&
-      windows.includes(value.call.arguments.component)) {
+      value.call.arguments.component !== "current" && windows.includes(value.call.arguments.component)) {
     return { mode: "tool", call: value.call };
   }
   if (allowRender && content.length <= 16_000 && value.mode === "tool" &&

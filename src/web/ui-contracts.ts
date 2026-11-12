@@ -5,16 +5,17 @@ export const panelRegistry = {
   usage: "Uso e limites",
   sessions: "Sessões",
   operations: "Operações",
+  memory: "Memória",
   display: "Visualização",
   generated: "Componente",
 } as const;
 
 export type PanelId = keyof typeof panelRegistry;
 export type BuiltinWindow = Exclude<PanelId, "display" | "generated">;
-export type WindowToolCall = {
-  name: "ui.openWindow" | "ui.closeWindow";
-  arguments: { component: BuiltinWindow };
-};
+/** closeWindow also takes "current": whatever panel is open, which only the browser knows. */
+export type WindowToolCall =
+  | { name: "ui.openWindow"; arguments: { component: BuiltinWindow } }
+  | { name: "ui.closeWindow"; arguments: { component: BuiltinWindow | "current" } };
 
 export type LayoutToolCall =
   | { name: "ui.switchMode"; arguments: { mode: UiMode } }
@@ -39,6 +40,7 @@ export type UiAction =
   | { type: "open_panel" | "close_panel"; panel: PanelId }
   | { type: "update_panel"; panel: "display"; schema: DisplaySchema }
   | { type: "open_component"; window: GeneratedWindow }
+  | { type: "close_current" }
   | { type: "reset_layout" };
 
 export interface UiEvent { turnId: string; action: UiAction }
@@ -51,6 +53,7 @@ export function applyUiAction(layout: UiLayout, action: UiAction): UiLayout {
     case "switch_mode": return { ...layout, mode: action.mode, panel: null };
     case "open_panel": return { ...layout, panel: action.panel };
     case "close_panel": return layout.panel === action.panel ? { ...layout, panel: null } : layout;
+    case "close_current": return { ...layout, panel: null };
     case "update_panel": return { ...layout, panel: "display", display: action.schema };
     case "open_component": return { ...layout, panel: "generated", generated: action.window };
     case "reset_layout": return initialLayout;
@@ -101,7 +104,9 @@ export function isWindowToolCall(value: unknown): value is WindowToolCall {
   if (!record(value) || !keys(value, "name", "arguments") ||
       (value.name !== "ui.openWindow" && value.name !== "ui.closeWindow")) return false;
   const args = value.arguments;
-  return record(args) && keys(args, "component") && isPanel(args.component) && args.component !== "display" && args.component !== "generated";
+  if (!record(args) || !keys(args, "component")) return false;
+  if (args.component === "current") return value.name === "ui.closeWindow";
+  return isPanel(args.component) && args.component !== "display" && args.component !== "generated";
 }
 
 export function isLocalUiToolCall(value: unknown): value is LocalUiToolCall {
@@ -125,7 +130,8 @@ export function isRenderToolCall(value: unknown): value is RenderToolCall {
 export function isUiAction(value: unknown): value is UiAction {
   if (!record(value)) return false;
   switch (value.type) {
-    case "reset_layout": return keys(value, "type");
+    case "reset_layout":
+    case "close_current": return keys(value, "type");
     case "switch_mode": return keys(value, "type", "mode") && (value.mode === "focus" || value.mode === "workspace");
     case "open_panel":
     case "close_panel": return keys(value, "type", "panel") && isPanel(value.panel);

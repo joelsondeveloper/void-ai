@@ -10,10 +10,10 @@ export const uiTools: readonly Omit<ModelTool, "prepare">[] = [
     name, description: `${name}: Open or close the named panel as indicated by the tool name. Settings contains preferences, voice and behavior. Panels ${JSON.stringify(builtinWindows.map(id => ({ id, title: panelRegistry[id] })))}.`,
     example: { name, arguments: { component: "settings" } },
     summary: name === "ui.openWindow"
-      ? "Abre um painel da interface: configurações, uso e limites, sessões ou operações."
-      : "Fecha um painel da interface que esteja aberto.",
+      ? "Abre um painel da interface: configurações, uso e limites, sessões, operações ou memória (o que o VOID guarda sobre o usuário)."
+      : "Fecha um painel da interface que esteja aberto. Use current para fechar o que estiver na tela.",
     parameters: { type: "object", additionalProperties: false, required: ["component"], properties: {
-      component: { type: "string", enum: builtinWindows, description: "Painel: " +
+      component: { type: "string", enum: name === "ui.closeWindow" ? [...builtinWindows, "current"] : builtinWindows, description: "Painel: " +
         builtinWindows.map((id) => `${id} (${panelRegistry[id]})`).join(", ") + "." } } },
     accepts: (value: unknown) => isLocalUiToolCall(value) && value.name === name,
   })),
@@ -48,10 +48,12 @@ export class UiRuntimeService {
     if (value.name === "ui.switchMode") return { response: `Modo ${value.arguments.mode === "workspace" ? "Workspace" : "Focus"} ativado.`,
       action: { type: "switch_mode", mode: value.arguments.mode } };
     if (value.name === "ui.resetLayout") return { response: "Layout restaurado.", action: { type: "reset_layout" } };
+    if (value.name === "ui.openWindow") {
+      const panel = value.arguments.component;
+      return { response: panelRegistry[panel] + " na tela.", action: { type: "open_panel", panel } };
+    }
     const panel = value.arguments.component;
-    return value.name === "ui.openWindow"
-      ? { response: panelRegistry[panel] + " na tela.", action: { type: "open_panel", panel } }
-      : { response: "Painel dispensado.", action: { type: "close_panel", panel } };
+    return { response: "Painel dispensado.", action: panel === "current" ? { type: "close_current" } : { type: "close_panel", panel } };
   }
 
   publish(sessionId: string, event: UiEvent): void {

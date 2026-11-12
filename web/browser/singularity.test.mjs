@@ -387,10 +387,10 @@ test("Focus · narrow viewport clamps the window and renders the validated displ
   assert.equal(await display.count(), 0);
 });
 
-test("Focus · the workspace opens by the overlay button and by a plain sentence the simulator has no script for", { timeout: 40_000 }, async (t) => {
+test("Focus · the workspace opens by the control on the screen and by a plain sentence the simulator has no script for", { timeout: 40_000 }, async (t) => {
   const page = await open(t, { width: 1280, height: 800 });
   await page.locator(".focus-orbit .singularity").waitFor();
-  await page.getByRole("button", { name: "Abrir comando de texto e voz" }).click();
+  // The control is on the Focus screen itself: no overlay, no model.
   await page.getByRole("button", { name: "Abrir workspace" }).click();
   await page.locator(".shell.wide").waitFor();
   assert.ok(await page.locator(".topbar").isVisible());
@@ -400,7 +400,11 @@ test("Focus · the workspace opens by the overlay button and by a plain sentence
   await command(page, "abre o workspace");
   await page.locator(".shell.wide").waitFor();
   assert.equal(await page.locator(".assistant-message, .user-message").count(), 0, "interface turns stay out of the chat");
-  await command(page, "volta pro anel");
+  await command(page, "abre o painel de uso");
+  await page.getByRole("dialog", { name: "Uso e limites" }).waitFor();
+  await command(page, "fecha o painel");
+  await page.getByRole("dialog").waitFor({ state: "detached" });
+  await command(page, "volta pro focus");
   await page.locator(".focus-orbit .singularity").waitFor();
 });
 
@@ -413,6 +417,13 @@ test("Workspace · what a turn saved to the memory stays visible under the answe
   await command(page, "bom dia");
   await page.locator(".assistant-message").nth(1).waitFor();
   assert.equal(await page.locator(".notice.memory").count(), 1, "the notice belongs to its turn and stays after the next one");
+  // The memory panel lists what was saved and deletes it.
+  await command(page, "abre a memória");
+  const panel = page.getByRole("dialog", { name: "Memória" });
+  await panel.getByText("O usuário mora em Recife.").waitFor();
+  await panel.getByText("captado da conversa").waitFor();
+  await panel.getByRole("button", { name: /^Apagar: O usuário mora em Recife/ }).click();
+  await panel.getByText("A memória está vazia.").waitFor();
 });
 
 test("LIVE without a provider rejects semantic chat dispatch", { timeout: 45_000 }, async (t) => {

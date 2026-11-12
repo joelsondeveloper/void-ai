@@ -699,7 +699,9 @@ test("Semantic UI commands use the existing message route and keep events sessio
   assert.equal((await api.post(path + "/messages", input)).status, 202);
   const { state } = await stream.until(({ active, ui }) => !active && ui?.turnId === input.id);
   assert.deepEqual(state.ui?.action, { type: "open_panel", panel: "usage" });
-  assert.equal(state.turns[0]?.model, "main-local");
+  // Changed in v2: this plain command is run by the host before the model, so no model served the turn. It used to
+  // assert "main-local" here. The message route, the event and its session scope are the same.
+  assert.equal(state.turns[0]?.model, null);
   assert.equal((await api.post(path + "/messages", input)).status, 202);
   const replay = await api.waitFor(path, ({ active }) => !active);
   assert.equal(replay.turns.length, 1);

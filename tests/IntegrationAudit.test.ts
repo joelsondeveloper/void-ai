@@ -58,10 +58,13 @@ test("semantic fixtures reach real registered tools without vocabulary gates", a
     const events = await run(text);
     assert.equal(events.some(e => e.type === "ui"), false);
   }
-  for (const text of ["Abra configurações.", "Modo workspace."]) {
+  // Changed in v2 (docs/audit-v2.md): a short imperative interface command is run by the host before the model,
+  // because real free models answered such requests in text or opened the wrong panel. This used to assert that
+  // even familiar phrases go through the decision model. A request the host does not recognize still does.
+  for (const [text, modelCalls] of [["Abra configurações.", 0], ["Modo workspace.", 0], ["Quero acessar meus ajustes.", 1]] as const) {
     const calls = prompts.length;
-    assert.ok((await run(text)).some(e => e.type === "ui"));
-    assert.equal(prompts.length, calls + 1, "even familiar phrases go through the decision model");
+    assert.ok((await run(text)).some(e => e.type === "ui"), text);
+    assert.equal(prompts.length, calls + modelCalls, text);
   }
   assert.match((await run("Quais agentes estão disponíveis?")).at(-1)?.text ?? "", /AgentRenderer/);
   await run("O que o AgentRenderer consegue fazer?");

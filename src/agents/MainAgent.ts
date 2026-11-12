@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { isDeepStrictEqual } from "node:util";
 import type { ConversationStore, ConversationTurn } from "../conversation/ConversationStore.js";
 import { parseDecision, validateDelegations, type MainDecision } from "../conversation/mainDecision.js";
 import { applyExtracted, claimsSaved, extractMemories } from "../conversation/memoryExtractor.js";
@@ -83,13 +82,10 @@ export interface MainAgentOptions {
   tool?: (call: { name: string; arguments: unknown }, resources: { sessionId: string; generate: GenerateComponent },
     context: AgentContext, maxTasks: number) => Promise<unknown>;
   /**
-   * Recognizes a message that is nothing but a registered operation ("abre o workspace"). The model is still asked
-   * first; when the turn would end without the action (the model answered in text, failed or could not be reached),
-   * the host runs the operation itself. The call goes through the registry: only what this channel may run executes.
+   * Recognizes a message that is nothing but a registered operation ("abre o workspace"). The host runs it before and
+   * instead of the model. The call goes through the registry: only what this channel may run executes.
    */
   shortcut?: (message: string) => { name: string; arguments: unknown } | undefined;
-  /** How long the tools conversation may take on such a message before the host runs the operation. Default 5 s. */
-  shortcutWaitMs?: number;
   routesForEffort?: (effort: ExplicitEffort) => ModelRoutes;
   formatProgress?: (event: ProgressEvent, fallback: string) => string;
   onCommunicationIssue?: (kind: "subscriber" | "progress" | "synthesis" | "history" | "memory", executionId?: string) => void | Promise<void>;
@@ -112,7 +108,6 @@ const summaryTimeoutMs = 20_000;
 const summaryTokens = 400;
 const summaryTurns = 12;
 const summaryAttempts = 3;
-const shortcutWaitMs = 5_000;
 
 const summaryPrompt = [
   "VOID_SUMMARY. Resuma a conversa abaixo, entre o usuário e o VOID, para servir de memória em conversas futuras.",
@@ -194,23 +189,20 @@ export class MainAgent {
       // The tool-calling conversation may run on another model than the JSON coordinator: what makes a model good at
       // one (tool calls) is not what the other needs (strict JSON).
       const conversationRoute = routes?.conversation ?? decisionRoute;
-      // A message that is nothing but a registered interface command ("abre o workspace"). The model is asked first,
-      // like for any other message; the host runs the command itself only when the turn would end without the action.
+      // A message that is nothing but a registered interface command ("abre o workspace") is run by the host, before
+      // and instead of the model: reaching the interface must not depend on a model emitting a well-formed tool call.
+      // The call still goes through the registry, so only what this channel may run executes.
       const candidate = this.options.tool && tools.length ? this.options.shortcut?.(message) : undefined;
-      const plain = candidate && acceptsTool(candidate) ? candidate : undefined;
-      const rescue = (error: unknown): Promise<MainResult> => {
-        if (!plain || input.context.signal.aborted) throw error;
-        return this.runShortcut(input, message, plain, limits, emit);
-      };
+      if (candidate && acceptsTool(candidate)) return this.runShortcut(input, message, candidate, limits, emit);
       if (this.mode === "tools") {
         try {
-          return await this.converse({ input, message, emit, effort, limits, routes, route: conversationRoute, plain });
+          return await this.converse({ input, message, emit, effort, limits, routes, route: conversationRoute });
         } catch (error) {
           // The conversation model cannot take tools, or the catalog no longer lists it as free (free routes come
           // and go). Nothing was shown yet, so the strict-JSON path can still answer, on the coordinator's own model.
           const { code } = describeFailure(error);
           const gone = code === "free_price_unverified" && conversationRoute.model !== decisionRoute.model;
-          if (code !== "tools_unsupported" && !gone) return rescue(error);
+          if (code !== "tools_unsupported" && !gone) throw error;
           // Never fall back silently: without this line the new mode would look like it does nothing.
           if (!this.warnedModels.has(conversationRoute.model)) {
             this.warnedModels.add(conversationRoute.model);
@@ -320,7 +312,7 @@ export class MainAgent {
             validateContent: (content) => { decisionRequest.validateContent?.(content); },
           });
         }
-      }).finally(() => clearTimeout(warning)); } catch (error) { return rescue(error); }
+      }).finally(() => clearTimeout(warning)); } catch (error) { throw error; }
       const { response, planning } = generated;
       if (decisionAttempts > 1) {
         planning.elapsedMs = Math.ceil(performance.now() - startedAt);
@@ -337,14 +329,12 @@ export class MainAgent {
       } catch (error) {
         const { category, code } = describeFailure(error);
         this.reportDecision({ ...diagnostic, outcome: "rejected", failure: { category, ...(code ? { code } : {}) } });
-        return rescue(error);
+        throw error;
       }
       this.reportDecision({ ...diagnostic, outcome: decision.mode });
-      // A message that was nothing but an interface command runs that command, whatever the model decided: answered
-      // in text, delegated, dismissed, or chose another operation.
-      const toolCall = plain ?? (decision.mode === "tool" ? decision.call : decision.mode === "display"
-        ? { name: "ui.render", arguments: { brief: message, display: decision.schema } } : undefined);
-      if (decision.mode === "ignore" && !toolCall) return { kind: "ignored" };
+      if (decision.mode === "ignore") return { kind: "ignored" };
+      const toolCall = decision.mode === "tool" ? decision.call : decision.mode === "display"
+        ? { name: "ui.render", arguments: { brief: message, display: decision.schema } } : undefined;
       if (toolCall && this.options.tool) {
         const signal = this.visualSignal(input.context.signal, limits, planning);
         const result = await this.options.tool(toolCall, {
@@ -360,7 +350,6 @@ export class MainAgent {
         emit({ type: "final", text });
         return { kind: "direct" };
       }
-      if (decision.mode === "ignore") return { kind: "ignored" };
       if (decision.mode === "tool" || decision.mode === "display") throw new ExecutionError({ category: "permission_denied",
         message: "Execução de ferramentas indisponível neste canal.", retryable: false });
       if (decision.mode === "direct") {
@@ -402,7 +391,10 @@ export class MainAgent {
     return this.toolOutcome(result);
   }
 
-  /** The whole turn is the host's command: used when the model could not even be asked (provider down, rate limit). */
+  /**
+   * The whole turn is the host's command. It is recorded the way a model-driven interface turn is: in the store, with
+   * the interface mark, which keeps it out of the chat, the session title and the history sent to the model.
+   */
   private async runShortcut(input: MainRequest, message: string, call: { name: string; arguments: unknown },
     limits: ExecutionLimits, emit: Emit): Promise<MainResult> {
     const { response, action } = await this.invokeShortcut(input, call, limits);
@@ -417,8 +409,7 @@ export class MainAgent {
    * operations) only when they help; results come back to the same conversation, so the final reply keeps its voice.
    */
   private async converse(c: { input: MainRequest; message: string; emit: Emit; effort: ExplicitEffort;
-    limits: ExecutionLimits; routes: ModelRoutes | undefined; route: ModelRoute;
-    plain?: { name: string; arguments: unknown } | undefined }): Promise<MainResult> {
+    limits: ExecutionLimits; routes: ModelRoutes | undefined; route: ModelRoute }): Promise<MainResult> {
     const { input, message, emit, effort, limits, routes, route } = c;
     const executionId = randomUUID();
     const trace: GenerationTrace = { sessionId: input.sessionId, executionId, effort, role: "decision" };
@@ -426,10 +417,7 @@ export class MainAgent {
     const budget = callBudget(limits.calls);
     const actions: TurnAction[] = [];
     const planning: PlanningUsage = { elapsedMs: 0 };
-    // A plain interface command does not wait long for the model: past this bound the turn is abandoned and the
-    // caller runs the command itself. A free route took 29 s in a live run just to open the workspace.
-    const signal = AbortSignal.any([input.context.signal, AbortSignal.timeout(c.plain
-      ? this.options.shortcutWaitMs ?? shortcutWaitMs : limits.pauseAfterMs ?? toolTurnTimeoutMs)]);
+    const signal = AbortSignal.any([input.context.signal, AbortSignal.timeout(limits.pauseAfterMs ?? toolTurnTimeoutMs)]);
     const warning = input.stream ? setTimeout(() => emit({ type: "generation_warning",
       text: "A geração continua. Você pode interrompê-la pelo botão Parar." }), limits.warnAfterMs) : undefined;
     const turnContext = (): AgentContext => ({ ...input.context, executionId, sessionId: input.sessionId, signal,
@@ -517,18 +505,7 @@ export class MainAgent {
       this.reportDecision({ trace, requestedModel: route.model, ...(returnedModel ? { returnedModel } : {}),
         outcome: result.toolCalls > 0 ? "tool" : "direct" });
       // The model sometimes writes a call as text ("[remember \"x\"] Anotei.") instead of making it. The user never sees that.
-      let content = withoutToolEcho(result.content, toolNames);
-      // A message that was nothing but an interface command gets exactly that command's action. The model may have
-      // answered in text (sometimes claiming it had opened it), given up after a bad call, or opened something else:
-      // a real model answered "abre o workspace" by opening the sessions panel. Unless it produced the very same
-      // action, the host's result replaces what the model did and said.
-      if (c.plain) {
-        const outcome = await this.invokeShortcut(input, c.plain, limits);
-        const did = outcome.action !== undefined && actions.some(({ action }) => isDeepStrictEqual(action, outcome.action));
-        if (!did) content = outcome.response;
-        actions.length = 0;
-        if (outcome.action) actions.push({ text: outcome.response, action: outcome.action });
-      }
+      const content = withoutToolEcho(result.content, toolNames);
       // Background noise leaves no trace: no history and nothing the memory tools staged.
       if (voice && content === ignoreSentinel) return { kind: "ignored" };
 

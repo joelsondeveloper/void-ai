@@ -279,7 +279,16 @@ select, input[type=number] { min-width: 0; padding: 6px 8px; border: 1px solid v
 }
 .command-heading { display: flex; justify-content: space-between; align-items: center; }
 .command-heading h1 { font-size: 16px; }
-.command-tools { display: flex; align-items: center; gap: 8px; }
+.focus-enter { position: absolute; right: 18px; bottom: 18px; display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px;
+  border: 1px solid transparent; border-radius: 6px; background: none; color: var(--quiet); font: 11px/1.4 var(--mono); letter-spacing: .04em;
+  cursor: pointer; opacity: .6; }
+.focus-enter:hover, .focus-enter:focus-visible { opacity: 1; color: var(--energy); border-color: currentColor; }
+.memory-pane { display: grid; gap: 12px; padding: 4px 2px; }
+.memory-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.memory-tools .technical { margin-right: auto; }
+.memory-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.memory-list li { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 8px 0; border-top: 1px solid color-mix(in srgb, currentColor 12%, transparent); }
+.memory-list p { margin: 2px 0 0; overflow-wrap: anywhere; }
 .command-overlay .feedback { margin: 0; }
 .command-overlay .voice-indicator { margin-top: 0; }
 .focus-reply { padding-block: 5px; overflow-wrap: anywhere; }
