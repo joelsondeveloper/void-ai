@@ -62,6 +62,8 @@ test("durable first-person statements become short third-person facts with a top
     ["trabalho na Florarte, mas hoje tô cansado", [["profile", "trabalho", "O usuário trabalha na Florarte."]]],
     ["VOID, eu tô trabalhando na Acme agora", [["profile", "trabalho", "O usuário trabalha na Acme."]]],
     ["trabalho com logística", [["profile", "ocupacao", "O usuário trabalha com logística."]]],
+    ["na verdade trabalho na Florarte sim, e moro em Recife", [["profile", "trabalho", "O usuário trabalha na Florarte."],
+      ["profile", "moradia", "O usuário mora em Recife."]]],
     ["sou desenvolvedor de software", [["profile", "profissao", "O usuário é desenvolvedor de software."]]],
     ["meu nome é joelson", [["profile", "nome", "O usuário se chama Joelson."]]],
     ["me chamo Joelson Vicente e moro em Recife", [["profile", "nome", "O usuário se chama Joelson Vicente."],

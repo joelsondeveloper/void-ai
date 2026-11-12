@@ -39,6 +39,8 @@ function clean(value: string | undefined): string | undefined {
   const text = value.replace(/\s+/g, " ").replace(/[\s.,;:!]+$/, "").trim()
     // "na Acme agora" is about the Acme, not about now.
     .replace(/\s+(?:agora|hoje|atualmente|no momento|ultimamente|hoje em dia|esses dias)$/iu, "")
+    // Emphasis at the end of a spoken sentence is not part of the fact: "trabalho na Florarte sim".
+    .replace(/(?:\s+(?:sim|mesmo|né|ne|viu|tá|ta|ok|aliás|alias|inclusive))+$/iu, "")
     .replace(/(?<![\p{L}\p{N}])minhas(?![\p{L}\p{N}])/giu, "suas").replace(/(?<![\p{L}\p{N}])meus(?![\p{L}\p{N}])/giu, "seus")
     .replace(/(?<![\p{L}\p{N}])minha(?![\p{L}\p{N}])/giu, "sua").replace(/(?<![\p{L}\p{N}])meu(?![\p{L}\p{N}])/giu, "seu");
   if (text.length < 2 || text.length > 100 || text.split(" ").length > 10 || vague.test(text)) return undefined;
