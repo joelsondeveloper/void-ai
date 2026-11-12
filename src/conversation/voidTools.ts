@@ -142,6 +142,8 @@ export interface MemoryCommit {
   readonly deleted: readonly string[];
   /** Writes refused when they were applied (for example the store filled up in the meantime). */
   readonly failed: number;
+  /** Things the turn tried to save that were already stored. They make "Anotei." true even with nothing new written. */
+  readonly known: number;
 }
 
 const quote = (text: string) => "“" + (text.length > 80 ? text.slice(0, 79).trimEnd() + "…" : text) + "”";
@@ -198,6 +200,7 @@ export function memoryTools(input: {
     | { op: "update"; id: string; text: string };
   const staged: Staged[] = [];
   let writes = 0;
+  let known = 0;
   const refuse = (error: unknown): never => {
     if (error instanceof MemoryError) throw new ToolInputError(error.message);
     throw error;
@@ -242,7 +245,7 @@ export function memoryTools(input: {
       try { existing = store.check({ kind, text: args.text }); }
       catch (error) { refuse(error); }
       if (!groundedInUserText(args.text, input.userText)) throw ungrounded();
-      if (existing) return `Já estava na memória (id ${existing.id}).`;
+      if (existing) { known++; return `Já estava na memória (id ${existing.id}).`; }
       // A new fact that shares most of its words with a stored one is probably a change ("mora em Olinda" after
       // "mora em Recife"). Ask before keeping both, so the memory does not end up contradicting itself.
       if (args.force !== true) {
@@ -376,13 +379,17 @@ export function memoryTools(input: {
             const { record, created } = store.add({ kind: entry.kind, text: entry.text, sessionId: input.sessionId,
               ...(input.turnId ? { sourceTurnId: input.turnId } : {}) });
             if (created) added.push(record);
+            else known++;
           }
         } catch (error) {
           if (!(error instanceof MemoryError)) throw error;
           failed++;
         }
       }
-      return { added, updated, deleted, failed };
+      // The count belongs to this commit: a second commit of the same turn starts from zero.
+      const already = known;
+      known = 0;
+      return { added, updated, deleted, failed, known: already };
     },
   };
 }

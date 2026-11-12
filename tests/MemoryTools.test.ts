@@ -40,7 +40,7 @@ test("remember stages a grounded fact and commit writes it with the session and 
     [{ text: "Mora em Recife e trabalha com logística", kind: "fact", sessionId: "s1", sourceTurnId: "turn-1" }]);
   assert.equal(memory.count(), 1);
   // A second commit has nothing left to apply.
-  assert.deepEqual(turn.commit(), { added: [], updated: [], deleted: [], failed: 0 });
+  assert.deepEqual(turn.commit(), { added: [], updated: [], deleted: [], failed: 0, known: 0 });
 });
 
 test("remember accepts profile entries and reports duplicates instead of writing twice", async (t) => {
@@ -72,7 +72,7 @@ test("a secret is refused with an explanation that never echoes it, and nothing 
   assert.equal(error.name, "ToolInputError");
   assert.match(error.message, /parece conter um CPF/);
   assert.ok(!error.message.includes(cpf) && !error.message.includes("52998224725"));
-  assert.deepEqual(turn.commit(), { added: [], updated: [], deleted: [], failed: 0 });
+  assert.deepEqual(turn.commit(), { added: [], updated: [], deleted: [], failed: 0, known: 0 });
   assert.equal(memory.count(), 0);
 });
 
@@ -144,7 +144,7 @@ test("inside the tool loop, a refusal reaches the model as a readable error resu
   });
   assert.equal(calls, 2);
   assert.equal(result.toolCalls, 1);
-  assert.deepEqual(turn.commit(), { added: [], updated: [], deleted: [], failed: 0 });
+  assert.deepEqual(turn.commit(), { added: [], updated: [], deleted: [], failed: 0, known: 0 });
 });
 
 test("a fact close to a stored one is not saved twice: the tool points to update_memory, or force keeps both", async (t) => {
@@ -182,7 +182,7 @@ test("update_memory follows the remember rules: grounded text, no secrets, real 
   await assert.rejects(call("update_memory", { id: record.id, text: "senha: hunter22" }), /parece conter uma senha/);
   await assert.rejects(call("update_memory", { id: record.id, text: "gosta de café" }), new RegExp(`outro registro \\(id ${other.id}\\)`));
   await assert.rejects(call("update_memory", { id: summary.id, text: "x" }), /Limite de 3/);
-  assert.deepEqual(turn.commit(), { added: [], updated: [], deleted: [], failed: 0 });
+  assert.deepEqual(turn.commit(), { added: [], updated: [], deleted: [], failed: 0, known: 0 });
   const next = tools(memory, ["agora moro em Olinda"]);
   await assert.rejects(next.call("update_memory", { id: summary.id, text: "Mora em Olinda" }), /Resumos de sessão não se editam/);
   await assert.rejects(next.call("update_memory", { id: "00000000-0000-4000-8000-000000000000", text: "Mora em Olinda" }), /Não existe registro/);
@@ -190,10 +190,10 @@ test("update_memory follows the remember rules: grounded text, no secrets, real 
 });
 
 test("the commit is described to the user in one line", () => {
-  const record = (text: string) => ({ id: "x", kind: "fact" as const, text, createdAt: "", updatedAt: "" });
-  assert.equal(describeMemoryCommit({ added: [], updated: [], deleted: [], failed: 0 }), undefined);
-  assert.equal(describeMemoryCommit({ added: [record("Mora em Recife"), record("Gosta de café")], updated: [], deleted: ["a", "b"], failed: 0 }),
+  const record = (text: string) => ({ id: "x", kind: "fact" as const, origin: "explicit" as const, text, createdAt: "", updatedAt: "" });
+  assert.equal(describeMemoryCommit({ added: [], updated: [], deleted: [], failed: 0, known: 0 }), undefined);
+  assert.equal(describeMemoryCommit({ added: [record("Mora em Recife"), record("Gosta de café")], updated: [], deleted: ["a", "b"], failed: 0, known: 0 }),
     "Memória: salvei “Mora em Recife”, “Gosta de café”; apaguei 2 registros.");
-  assert.equal(describeMemoryCommit({ added: [record("x".repeat(120))], updated: [], deleted: [], failed: 0 }),
+  assert.equal(describeMemoryCommit({ added: [record("x".repeat(120))], updated: [], deleted: [], failed: 0, known: 0 }),
     "Memória: salvei “" + "x".repeat(79) + "…”.");
 });

@@ -1,12 +1,13 @@
 import { randomUUID } from "node:crypto";
 import type { ConversationStore, ConversationTurn } from "../conversation/ConversationStore.js";
 import { parseDecision, validateDelegations, type MainDecision } from "../conversation/mainDecision.js";
+import { applyExtracted, claimsSaved, extractMemories } from "../conversation/memoryExtractor.js";
 import { memoryLimits, type MemoryStore } from "../conversation/MemoryStore.js";
 import { chatSystemPrompt, decisionMemoryPrompt, ignoreSentinel, memoryBlockFor, resolvePersona, type MemoryBlock } from "../conversation/persona.js";
 import { parseSynthesis, renderResults } from "../conversation/synthesis.js";
 import { runToolLoop } from "../conversation/toolLoop.js";
-import { callBudget, describeMemoryCommit, memoryTools, operationTools, specialistTools, type CallBudget, type SpecialistRunner,
-  type TurnAction } from "../conversation/voidTools.js";
+import { callBudget, describeMemoryCommit, memoryTools, operationTools, specialistTools, type CallBudget, type MemoryCommit,
+  type MemoryTurn, type SpecialistRunner, type TurnAction } from "../conversation/voidTools.js";
 import type { ExecutionGovernance, PlanningUsage } from "../governance/ExecutionGovernance.js";
 import { validUsage } from "../governance/modelPolicy.js";
 import type { ExecutionObserver, ProgressEvent } from "../governance/ExecutionRun.js";
@@ -329,6 +330,7 @@ export class MainAgent {
         const action = "action" in result ? result.action as UiAction : undefined;
         this.conversations.recordDirect(input.sessionId, message, result.response, input.turnId, planning.servedModel, !!action);
         if (action) emit({ type: "ui", text: result.response, action });
+        this.settleMemory({ input, message, emit, reply: result.response });
         emit({ type: "final", text: result.response });
         return { kind: "direct" };
       }
@@ -337,6 +339,7 @@ export class MainAgent {
       if (decision.mode === "direct") {
         try { this.conversations.recordDirect(input.sessionId, message, decision.response, input.turnId, planning.servedModel); }
         catch { this.issue("history"); }
+        this.settleMemory({ input, message, emit, reply: decision.response });
         emit({ type: "final", text: decision.response });
         return { kind: "direct" };
       }
@@ -346,6 +349,7 @@ export class MainAgent {
       const introduction = "Vou encaminhar a análise para " + names.join(", ") + ".";
       this.conversations.bind(input.sessionId, executionId, message, input.turnId, introduction);
       emit({ type: "initial", executionId, specialists, text: introduction });
+      this.settleMemory({ input, message, emit });
       return this.execute(input.sessionId, executionId, effort, message, decision.steps, emit, (observer) =>
         this.governance.start({ id: executionId, plan: decision.steps, context: { ...input.context, sessionId: input.sessionId },
           effort, limits, planning, ...(routes ? { modelRoutes: routes } : {}), ...observer }));
@@ -456,16 +460,8 @@ export class MainAgent {
       try {
         this.conversations.recordDirect(input.sessionId, message, result.content, input.turnId, servedModel, actions.length > 0);
       } catch { this.issue("history"); }
-      let memoryNotice: string | undefined;
-      if (memoryTurn) {
-        try {
-          const changes = memoryTurn.commit();
-          if (changes.failed) this.issue("memory");
-          memoryNotice = describeMemoryCommit(changes);
-        } catch { this.issue("memory"); }
-      }
       for (const { text, action } of actions) emit({ type: "ui", text, action });
-      if (memoryNotice) emit({ type: "memory", text: memoryNotice });
+      this.settleMemory({ input, message, emit, reply: result.content, ...(memoryTurn ? { staged: memoryTurn } : {}) });
       emit({ type: "final", text: result.content });
       return { kind: "direct" };
     } catch (error) {
@@ -848,6 +844,28 @@ export class MainAgent {
       this.issue("memory");
       return undefined;
     }
+  }
+
+  /**
+   * Ends a turn's memory work, the same way in every mode: applies what the memory tools staged, then what the host
+   * itself extracts from the user's message, and tells the user what changed. The extraction does not depend on the
+   * model having called anything. A reply that claims a save while nothing was saved is contradicted in the notice.
+   * Never called for a turn that failed or for a voice turn dismissed as noise.
+   */
+  private settleMemory(c: { input: MainRequest; message: string; emit: Emit; reply?: string; staged?: MemoryTurn }): void {
+    const { memory } = this.options;
+    if (!memory) return;
+    let changes: MemoryCommit = { added: [], updated: [], deleted: [], failed: 0, known: 0 };
+    try { if (c.staged) changes = c.staged.commit(); } catch { this.issue("memory"); }
+    try {
+      const extracted = applyExtracted(memory, extractMemories(c.message), { sessionId: c.input.sessionId, turnId: c.input.turnId });
+      changes = { added: [...changes.added, ...extracted.added], updated: [...changes.updated, ...extracted.updated],
+        deleted: changes.deleted, failed: changes.failed + extracted.failed, known: changes.known + extracted.known };
+    } catch { this.issue("memory"); }
+    if (changes.failed) this.issue("memory");
+    const notice = describeMemoryCommit(changes) ?? (c.reply !== undefined && changes.known === 0 && claimsSaved(c.reply)
+      ? "Memória: nada foi salvo nesta resposta." : undefined);
+    if (notice) c.emit({ type: "memory", text: notice });
   }
 
   private reportDecision(diagnostic: DecisionDiagnostic): void {

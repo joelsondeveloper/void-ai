@@ -7,10 +7,17 @@ export const memoryKinds = ["profile", "fact", "summary"] as const;
 export type MemoryKind = typeof memoryKinds[number];
 
 /** Something VOID keeps about the host's user across sessions. It belongs to the user, not to a session. */
+export const memoryOrigins = ["explicit", "extracted", "summary"] as const;
+/** explicit: the user asked to remember it. extracted: the host inferred it from what the user said. summary: a session summary. */
+export type MemoryOrigin = typeof memoryOrigins[number];
+
 export interface MemoryRecord {
   readonly id: string;
   readonly kind: MemoryKind;
   readonly text: string;
+  readonly origin: MemoryOrigin;
+  /** Normalized theme ("trabalho", "moradia", "gosta:cafe"). One record per topic: a new statement replaces the old one. */
+  readonly topic?: string;
   readonly createdAt: string;
   readonly updatedAt: string;
   /** Conversation turn that produced the record, when there was one. */
@@ -22,6 +29,8 @@ export interface MemoryRecord {
 export interface MemoryInput {
   readonly kind: MemoryKind;
   readonly text: string;
+  /** Defaults to "summary" for summaries and "explicit" otherwise. */
+  readonly origin?: MemoryOrigin;
   readonly sourceTurnId?: string;
   readonly sessionId?: string;
 }
@@ -44,6 +53,13 @@ export class MemoryError extends Error {
   constructor(readonly code: MemoryErrorCode, message: string) { super(message); }
 }
 
+/** What remember() did with a statement about a topic. */
+export interface TopicWrite {
+  readonly record: MemoryRecord;
+  /** created: no record had this topic. updated: the record of this topic got the new text. unchanged: same text as before. */
+  readonly outcome: "created" | "updated" | "unchanged";
+}
+
 export interface MemorySearch {
   /** At most this many results. Defaults to 5, capped at 50. */
   readonly limit?: number;
@@ -62,6 +78,14 @@ export interface MemoryStore {
    * MemoryError not_found for an unknown id and invalid when another record already holds the same text.
    */
   update(id: string, text: string): MemoryRecord;
+  /**
+   * Stores a statement under a topic, replacing the text of the record that already holds the topic instead of
+   * adding a second one. A record without topic that has the same text takes the topic. Same validation as add.
+   */
+  remember(input: MemoryInput & { readonly topic: string }): TopicWrite;
+  /** Gives a topic to a record that has none. Returns false when the id is unknown or the topic is already taken. */
+  adoptTopic(id: string, topic: string): boolean;
+  byTopic(topic: string): MemoryRecord | undefined;
   get(id: string): MemoryRecord | undefined;
   /** Oldest first. */
   list(kind?: MemoryKind): MemoryRecord[];
@@ -127,6 +151,12 @@ function cleanText(kind: MemoryKind, raw: unknown): string {
   return text;
 }
 
+const topicPattern = /^[a-z0-9]+(?:[:-][a-z0-9]+)*$/;
+function cleanTopic(value: unknown): string {
+  if (typeof value !== "string" || value.length > 80 || !topicPattern.test(value)) throw new MemoryError("invalid", "Tema de memória inválido.");
+  return value;
+}
+
 function optionalId(value: unknown, label: string): string | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(value)) throw new MemoryError("invalid", `${label} inválido.`);
@@ -159,6 +189,14 @@ export class SQLiteMemoryStore implements MemoryStore {
         updated_at TEXT NOT NULL
       ) STRICT;
     `);
+    // Columns added after the first release. Existing rows keep working: origin is derived from the kind.
+    const columns = this.db.prepare("PRAGMA table_info(memory_records)").all().map(({ name }) => name);
+    if (!columns.includes("origin")) {
+      this.db.exec("ALTER TABLE memory_records ADD COLUMN origin TEXT NOT NULL DEFAULT 'explicit'");
+      this.db.exec("UPDATE memory_records SET origin = 'summary' WHERE kind = 'summary'");
+    }
+    if (!columns.includes("topic")) this.db.exec("ALTER TABLE memory_records ADD COLUMN topic TEXT");
+    this.db.exec("CREATE UNIQUE INDEX IF NOT EXISTS memory_records_topic ON memory_records(topic) WHERE topic IS NOT NULL");
     const requested = options.search ?? "auto";
     const available = requested !== "fallback" && fts5Available(this.db);
     if (requested === "fts5" && !available) {
@@ -183,24 +221,64 @@ export class SQLiteMemoryStore implements MemoryStore {
 
   add(input: MemoryInput): MemoryWrite {
     return this.transaction(() => {
-      const { kind, text, normalized, existing, sourceTurnId, sessionId } = this.validate(input);
+      const { kind, text, normalized, existing, sourceTurnId, sessionId, origin } = this.validate(input);
       const at = this.now().toISOString();
       if (existing) {
         this.db.prepare("UPDATE memory_records SET updated_at = ? WHERE id = ?").run(at, existing.id);
         return { record: { ...existing, updatedAt: at }, created: false, removed: [] };
       }
-      const id = randomUUID();
-      this.db.prepare(`INSERT INTO memory_records (id, kind, text, normalized, created_at, updated_at, source_turn_id, session_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(id, kind, text, normalized, at, at, sourceTurnId ?? null, sessionId ?? null);
-      if (this.searchMode === "fts5") this.db.prepare("INSERT INTO memory_fts(id, body) VALUES (?, ?)").run(id, text);
+      const id = this.insert({ kind, text, normalized, at, sourceTurnId, sessionId, origin });
       const removed = kind !== "summary" ? [] : this.db.prepare(`
         SELECT id FROM memory_records WHERE kind = 'summary' ORDER BY created_at DESC, rowid DESC LIMIT -1 OFFSET ?
       `).all(memoryLimits.summaries).flatMap(({ id: old }) => typeof old === "string" ? [old] : []);
       for (const old of removed) this.remove(old);
-      const record: MemoryRecord = { id, kind, text, createdAt: at, updatedAt: at,
+      const record: MemoryRecord = { id, kind, text, origin, createdAt: at, updatedAt: at,
         ...(sourceTurnId ? { sourceTurnId } : {}), ...(sessionId ? { sessionId } : {}) };
       return { record, created: true, removed };
     });
+  }
+
+  remember(input: MemoryInput & { readonly topic: string }): TopicWrite {
+    return this.transaction((): TopicWrite => {
+      const topic = cleanTopic(input.topic);
+      if (input.kind === "summary") throw new MemoryError("invalid", "Resumos não têm tema.");
+      const text = cleanText(input.kind, input.text);
+      const normalized = normalizeMemoryText(text);
+      const at = this.now().toISOString();
+      const held = this.byTopic(topic);
+      const same = this.db.prepare("SELECT * FROM memory_records WHERE normalized = ?").get(normalized);
+      const twin = same ? this.read(same) : undefined;
+      if (held && twin?.id === held.id) {
+        this.db.prepare("UPDATE memory_records SET updated_at = ? WHERE id = ?").run(at, held.id);
+        return { record: { ...held, updatedAt: at }, outcome: "unchanged" };
+      }
+      if (twin) {
+        // The same sentence is already stored elsewhere. It becomes the record of this topic; a stale one goes away.
+        const takes = twin.topic === undefined || held !== undefined;
+        if (held) this.remove(held.id);
+        if (takes) this.db.prepare("UPDATE memory_records SET topic = ?, updated_at = ? WHERE id = ?").run(topic, at, twin.id);
+        return { record: { ...twin, updatedAt: at, ...(takes ? { topic } : {}) }, outcome: held ? "updated" : "unchanged" };
+      }
+      if (held) {
+        this.db.prepare("UPDATE memory_records SET text = ?, normalized = ?, updated_at = ? WHERE id = ?").run(text, normalized, at, held.id);
+        if (this.searchMode === "fts5") this.db.prepare("UPDATE memory_fts SET body = ? WHERE id = ?").run(text, held.id);
+        return { record: { ...held, text, updatedAt: at }, outcome: "updated" };
+      }
+      const { sourceTurnId, sessionId, origin, kind } = this.validate(input);
+      const id = this.insert({ kind, text, normalized, at, sourceTurnId, sessionId, origin, topic });
+      return { record: { id, kind, text, origin, topic, createdAt: at, updatedAt: at,
+        ...(sourceTurnId ? { sourceTurnId } : {}), ...(sessionId ? { sessionId } : {}) }, outcome: "created" };
+    });
+  }
+
+  adoptTopic(id: string, topic: string): boolean {
+    if (!isMemoryId(id) || this.byTopic(cleanTopic(topic))) return false;
+    return this.db.prepare("UPDATE memory_records SET topic = ? WHERE id = ? AND topic IS NULL AND kind <> 'summary'").run(topic, id).changes === 1;
+  }
+
+  byTopic(topic: string): MemoryRecord | undefined {
+    const row = this.db.prepare("SELECT * FROM memory_records WHERE topic = ?").get(topic);
+    return row ? this.read(row) : undefined;
   }
 
   update(id: string, text: string): MemoryRecord {
@@ -304,7 +382,21 @@ export class SQLiteMemoryStore implements MemoryStore {
           "Peça ao usuário para apagar registros antigos antes de gravar novos. Nada foi apagado automaticamente.");
       }
     }
-    return { kind: input.kind, text, normalized, existing, sourceTurnId, sessionId };
+    const origin = input.origin ?? (input.kind === "summary" ? "summary" : "explicit");
+    if (!memoryOrigins.includes(origin) || (origin === "summary") !== (input.kind === "summary")) {
+      throw new MemoryError("invalid", "Origem de memória inválida.");
+    }
+    return { kind: input.kind, text, normalized, existing, sourceTurnId, sessionId, origin };
+  }
+
+  private insert(row: { kind: MemoryKind; text: string; normalized: string; at: string; origin: MemoryOrigin;
+    sourceTurnId: string | undefined; sessionId: string | undefined; topic?: string }): string {
+    const id = randomUUID();
+    this.db.prepare(`INSERT INTO memory_records (id, kind, text, normalized, created_at, updated_at, source_turn_id, session_id, origin, topic)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, row.kind, row.text, row.normalized, row.at, row.at,
+      row.sourceTurnId ?? null, row.sessionId ?? null, row.origin, row.topic ?? null);
+    if (this.searchMode === "fts5") this.db.prepare("INSERT INTO memory_fts(id, body) VALUES (?, ?)").run(id, row.text);
+    return id;
   }
 
   private remove(id: string): boolean {
@@ -329,7 +421,9 @@ export class SQLiteMemoryStore implements MemoryStore {
     const { id, kind, text, created_at: createdAt, updated_at: updatedAt, source_turn_id: sourceTurnId, session_id: sessionId } = row;
     if (typeof id !== "string" || !memoryKinds.some((value) => value === kind) || typeof text !== "string" ||
         typeof createdAt !== "string" || typeof updatedAt !== "string") throw new Error("Invalid memory record.");
-    return { id, kind: kind as MemoryKind, text, createdAt, updatedAt,
+    const origin = memoryOrigins.find((value) => value === row.origin) ?? (kind === "summary" ? "summary" : "explicit");
+    return { id, kind: kind as MemoryKind, text, origin, createdAt, updatedAt,
+      ...(typeof row.topic === "string" ? { topic: row.topic } : {}),
       ...(typeof sourceTurnId === "string" ? { sourceTurnId } : {}), ...(typeof sessionId === "string" ? { sessionId } : {}) };
   }
 }
