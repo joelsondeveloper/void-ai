@@ -97,6 +97,9 @@ export function createWebRuntime(options: {
     onCommunicationIssue: (kind) => { console.warn(`VOID web: falha interna (${kind}); a conversa seguiu sem essa parte.`); },
     // Plain interface commands ("abre o workspace") always reach the interface: the host runs them when the model does not.
     shortcut: interfaceCommand,
+    // With a real model behind it, the memory agent decides what to keep after each turn. MOCK keeps the fixed rules:
+    // its scripted provider cannot answer the agent.
+    memoryAgent: !!options.live,
     specialist: (task, context, maxDelegations) => agentRuntime.execute(task, context, maxDelegations),
     tool: (call, resources, context, maxTasks) => agentRuntime.invokeTool("main-agent", call, resources, context, {
       maxTasks,

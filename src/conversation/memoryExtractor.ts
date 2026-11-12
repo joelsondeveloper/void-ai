@@ -1,4 +1,5 @@
-import { MemoryError, searchTerms, type MemoryOrigin, type MemoryRecord, type MemoryStore } from "./MemoryStore.js";
+import { searchTerms, type MemoryOrigin } from "./MemoryStore.js";
+import type { MemoryTurn } from "./voidTools.js";
 
 /**
  * Deterministic capture of durable facts from what the user wrote, with no model call. It exists because a model
@@ -153,52 +154,39 @@ export function extractMemories(message: string): ExtractedMemory[] {
 }
 
 /** Topics that hold one value at a time: a new statement replaces the old one even when the words differ. */
-const exclusive = (topic: string) => !topic.includes(":") || topic.startsWith("pessoa:");
+export const exclusiveTopic = (topic: string) => !topic.includes(":") || topic.startsWith("pessoa:");
 const stems = (text: string) => new Set(searchTerms(text).filter((term) => term !== "usuario").map((term) => term.slice(0, 4)));
 
 /** How much two sentences say the same thing: the smaller of the two shared-word ratios. */
-function overlap(a: string, b: string): number {
+export function overlap(a: string, b: string): number {
   const left = stems(a), right = stems(b);
   if (!left.size || !right.size) return 0;
   const shared = [...left].filter((term) => right.has(term)).length;
   return Math.min(shared / left.size, shared / right.size);
 }
 
-export interface ExtractionCommit {
-  readonly added: MemoryRecord[];
-  readonly updated: MemoryRecord[];
-  /** Statements that were already in the memory, word for word or under the same topic. */
-  readonly known: number;
-  readonly failed: number;
-}
+const sentencesOf = (message: string) => message.split(/(?<=[.!?;])\s+|\n+/).map((sentence) => sentence.trim());
+
+/** The user asked to keep something: "lembra que...", "anota aí...", "não esquece que...". */
+export const asksToRemember = (message: string) => sentencesOf(message).some((sentence) => request.test(sentence));
+/** The user asked to drop something: "esquece...", "apaga da memória...". */
+export const asksToForget = (message: string) =>
+  sentencesOf(message).some((sentence) => forgetting.test(sentence) && !request.test(sentence));
 
 /**
- * Writes extracted facts. A fact whose topic is new first looks for a record without topic that says the same
- * thing (for example one the model saved with `remember` in this very turn) and marks it instead of duplicating.
+ * Stages what the fixed rules found, through the same path the memory tools and the memory agent use. Returns how
+ * many items the stage refused (a secret, for one).
  */
-export function applyExtracted(store: MemoryStore, items: readonly ExtractedMemory[],
-  meta: { sessionId: string; turnId?: string | undefined }): ExtractionCommit {
-  const added: MemoryRecord[] = [], updated: MemoryRecord[] = [];
-  let known = 0, failed = 0;
+export function stageExtracted(items: readonly ExtractedMemory[], turn: MemoryTurn): number {
+  let refused = 0;
   for (const item of items) {
-    try {
-      if (!store.byTopic(item.topic)) {
-        const threshold = exclusive(item.topic) ? 0.5 : 0.8;
-        const twin = store.search(item.text, { limit: 5, kinds: ["fact", "profile"] })
-          .find((record) => record.topic === undefined && overlap(item.text, record.text) >= threshold);
-        if (twin && store.adoptTopic(twin.id, item.topic) && overlap(item.text, twin.text) >= 0.8) { known++; continue; }
-      }
-      const { record, outcome } = store.remember({ kind: item.kind, text: item.text, topic: item.topic, origin: item.origin,
-        sessionId: meta.sessionId, ...(meta.turnId ? { sourceTurnId: meta.turnId } : {}) });
-      if (outcome === "created") added.push(record);
-      else if (outcome === "updated") updated.push(record);
-      else known++;
-    } catch (error) {
-      if (!(error instanceof MemoryError)) throw error;
-      failed++;
+    try { turn.stage.add({ text: item.text, kind: item.kind, origin: item.origin, topic: item.topic }); }
+    catch (error) {
+      if (!(error instanceof Error && error.name === "ToolInputError")) throw error;
+      refused++;
     }
   }
-  return { added, updated, known, failed };
+  return refused;
 }
 
 /** True when a reply tells the user something was saved. Used to contradict it when nothing was. */

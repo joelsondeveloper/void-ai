@@ -1,7 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type { ConversationStore, ConversationTurn } from "../conversation/ConversationStore.js";
 import { parseDecision, validateDelegations, type MainDecision } from "../conversation/mainDecision.js";
-import { applyExtracted, claimsSaved, extractMemories } from "../conversation/memoryExtractor.js";
+import { claimsInterfaceChange, claimsMemoryChange, honestReply, honesty } from "../conversation/honesty.js";
+import { memoryAgentInput, memoryAgentPrompt, parseMemoryOps, stageMemoryOps, type MemoryOp } from "../conversation/memoryAgent.js";
+import { asksToRemember, extractMemories, stageExtracted } from "../conversation/memoryExtractor.js";
+import { detectSecret } from "../conversation/secrets.js";
 import { memoryLimits, type MemoryStore } from "../conversation/MemoryStore.js";
 import { chatSystemPrompt, decisionMemoryPrompt, ignoreSentinel, memoryBlockFor, resolvePersona, withoutToolEcho,
   type MemoryBlock } from "../conversation/persona.js";
@@ -78,6 +81,12 @@ export interface MainAgentOptions {
    * forget tools. Without it the conversation has no memory across sessions.
    */
   memory?: MemoryStore;
+  /**
+   * How the host captures memories on its own after a turn. true: the memory agent, one short separate model call
+   * that proposes operations; the fixed rules take over when that call cannot be made. false (default): only the
+   * fixed rules, with no model call. Channels that talk to a real model turn it on.
+   */
+  memoryAgent?: boolean;
   componentCatalog?: (sessionId: string) => { key: string; title: string; version: number }[];
   tool?: (call: { name: string; arguments: unknown }, resources: { sessionId: string; generate: GenerateComponent },
     context: AgentContext, maxTasks: number) => Promise<unknown>;
@@ -108,6 +117,23 @@ const summaryTimeoutMs = 20_000;
 const summaryTokens = 400;
 const summaryTurns = 12;
 const summaryAttempts = 3;
+const memoryAgentTokens = 300;
+const memoryAgentTimeoutMs = 20_000;
+const memoryAgentRecords = 40;
+const noMemoryChange: MemoryCommit = Object.freeze({ added: [], updated: [], deleted: [], failed: 0, known: 0 });
+const wrote = (changes: MemoryCommit) => changes.added.length + changes.updated.length + changes.deleted.length + changes.known > 0;
+const merged = (a: MemoryCommit, b: MemoryCommit): MemoryCommit => ({ added: [...a.added, ...b.added], updated: [...a.updated, ...b.updated],
+  deleted: [...a.deleted, ...b.deleted], failed: a.failed + b.failed, known: a.known + b.known });
+
+/** What a memory capture needs to know about the turn it belongs to. */
+interface MemoryScope {
+  sessionId: string;
+  turnId?: string | undefined;
+  message: string;
+  route: ModelRoute;
+  limits: ExecutionLimits;
+  trace: GenerationTrace;
+}
 
 const summaryPrompt = [
   "VOID_SUMMARY. Resuma a conversa abaixo, entre o usuário e o VOID, para servir de memória em conversas futuras.",
@@ -148,6 +174,8 @@ export class MainAgent {
   private readonly summarizing = new Set<string>();
   /** Failed summary attempts per previous session, in this process. */
   private readonly summaryFailures = new Map<string, number>();
+  /** Memory captures still running per session. The next turn of the same session waits for them. */
+  private readonly pendingMemory = new Map<string, Promise<void>>();
 
   constructor(
     private readonly router: ModelRouter,
@@ -176,6 +204,8 @@ export class MainAgent {
         throw new ExecutionError({ category: "invalid_response",
           message: "A mensagem deve ter entre 1 e 16.000 caracteres.", retryable: false });
       }
+      // Never ask before the previous turn's capture has been written.
+      await this.pendingMemory.get(input.sessionId);
       const tools = this.options.tool ? this.agents.toolCatalog("main-agent", input.context.permissions) : [];
       const acceptsTool = (call: unknown) => !!call && typeof call === "object" && "name" in call &&
         tools.some((tool) => tool.name === call.name && tool.accepts(call));
@@ -189,6 +219,7 @@ export class MainAgent {
       // The tool-calling conversation may run on another model than the JSON coordinator: what makes a model good at
       // one (tool calls) is not what the other needs (strict JSON).
       const conversationRoute = routes?.conversation ?? decisionRoute;
+      const memoryRoute = routes?.memory ?? conversationRoute;
       // A message that is nothing but a registered interface command ("abre o workspace") is run by the host, before
       // and instead of the model: reaching the interface must not depend on a model emitting a well-formed tool call.
       // The call still goes through the registry, so only what this channel may run executes.
@@ -196,7 +227,7 @@ export class MainAgent {
       if (candidate && acceptsTool(candidate)) return this.runShortcut(input, message, candidate, limits, emit);
       if (this.mode === "tools") {
         try {
-          return await this.converse({ input, message, emit, effort, limits, routes, route: conversationRoute });
+          return await this.converse({ input, message, emit, effort, limits, routes, route: conversationRoute, memoryRoute });
         } catch (error) {
           // The conversation model cannot take tools, or the catalog no longer lists it as free (free routes come
           // and go). Nothing was shown yet, so the strict-JSON path can still answer, on the coordinator's own model.
@@ -219,6 +250,12 @@ export class MainAgent {
       }) : undefined;
       const history = this.conversations.history(input.sessionId, this.historyTurns)
         .map(({ role, content }) => ({ role, content: content.slice(0, 2_000) }));
+      // The first turn of a session first summarizes the previous one, in this mode as well.
+      if (this.options.memory && history.length === 0) {
+        await this.summarizePrevious({ sessionId: input.sessionId, memory: this.options.memory, route: routes?.synthesis ?? decisionRoute,
+          limits, signal: input.context.signal, budget: callBudget(limits.calls),
+          trace: { sessionId: input.sessionId, executionId: randomUUID(), effort, role: "synthesis" } });
+      }
       // Same block as the tools mode, so the JSON coordinator (and the tools fallback) also knows the user.
       const memoryBlock = this.memoryContext(input.sessionId, message, "decision");
       const executionId = randomUUID();
@@ -343,20 +380,22 @@ export class MainAgent {
             planning, decisionAttempts, failedDecisionTokens),
         }, { ...input.context, executionId, signal }, limits.steps);
         signal.throwIfAborted();
-        const { response: text, action } = this.toolOutcome(result);
+        const { response, action } = this.toolOutcome(result);
+        const text = await this.closeTurn({ sessionId: input.sessionId, turnId: input.turnId, message, route: memoryRoute, limits, trace,
+          emit, reply: response, acted: !!action });
         this.conversations.recordDirect(input.sessionId, message, text, input.turnId, planning.servedModel, !!action);
-        if (action) emit({ type: "ui", text, action });
-        this.settleMemory({ input, message, emit, reply: text });
+        if (action) emit({ type: "ui", text: response, action });
         emit({ type: "final", text });
         return { kind: "direct" };
       }
       if (decision.mode === "tool" || decision.mode === "display") throw new ExecutionError({ category: "permission_denied",
         message: "Execução de ferramentas indisponível neste canal.", retryable: false });
       if (decision.mode === "direct") {
-        try { this.conversations.recordDirect(input.sessionId, message, decision.response, input.turnId, planning.servedModel); }
+        const text = await this.closeTurn({ sessionId: input.sessionId, turnId: input.turnId, message, route: memoryRoute, limits, trace,
+          emit, reply: decision.response, acted: false });
+        try { this.conversations.recordDirect(input.sessionId, message, text, input.turnId, planning.servedModel); }
         catch { this.issue("history"); }
-        this.settleMemory({ input, message, emit, reply: decision.response });
-        emit({ type: "final", text: decision.response });
+        emit({ type: "final", text });
         return { kind: "direct" };
       }
 
@@ -365,7 +404,6 @@ export class MainAgent {
       const introduction = "Vou encaminhar a análise para " + names.join(", ") + ".";
       this.conversations.bind(input.sessionId, executionId, message, input.turnId, introduction);
       emit({ type: "initial", executionId, specialists, text: introduction });
-      this.settleMemory({ input, message, emit });
       return this.execute(input.sessionId, executionId, effort, message, decision.steps, emit, (observer) =>
         this.governance.start({ id: executionId, plan: decision.steps, context: { ...input.context, sessionId: input.sessionId },
           effort, limits, planning, ...(routes ? { modelRoutes: routes } : {}), ...observer }));
@@ -409,7 +447,7 @@ export class MainAgent {
    * operations) only when they help; results come back to the same conversation, so the final reply keeps its voice.
    */
   private async converse(c: { input: MainRequest; message: string; emit: Emit; effort: ExplicitEffort;
-    limits: ExecutionLimits; routes: ModelRoutes | undefined; route: ModelRoute }): Promise<MainResult> {
+    limits: ExecutionLimits; routes: ModelRoutes | undefined; route: ModelRoute; memoryRoute: ModelRoute }): Promise<MainResult> {
     const { input, message, emit, effort, limits, routes, route } = c;
     const executionId = randomUUID();
     const trace: GenerationTrace = { sessionId: input.sessionId, executionId, effort, role: "decision" };
@@ -505,15 +543,16 @@ export class MainAgent {
       this.reportDecision({ trace, requestedModel: route.model, ...(returnedModel ? { returnedModel } : {}),
         outcome: result.toolCalls > 0 ? "tool" : "direct" });
       // The model sometimes writes a call as text ("[remember \"x\"] Anotei.") instead of making it. The user never sees that.
-      const content = withoutToolEcho(result.content, toolNames);
+      const answered = withoutToolEcho(result.content, toolNames);
       // Background noise leaves no trace: no history and nothing the memory tools staged.
-      if (voice && content === ignoreSentinel) return { kind: "ignored" };
+      if (voice && answered === ignoreSentinel) return { kind: "ignored" };
 
+      const content = await this.closeTurn({ sessionId: input.sessionId, turnId: input.turnId, message, route: c.memoryRoute, limits, trace,
+        emit, reply: answered, acted: actions.length > 0, exhausted: budget.remaining <= 0, ...(memoryTurn ? { staged: memoryTurn } : {}) });
       try {
         this.conversations.recordDirect(input.sessionId, message, content, input.turnId, servedModel, actions.length > 0);
       } catch { this.issue("history"); }
       for (const { text, action } of actions) emit({ type: "ui", text, action });
-      this.settleMemory({ input, message, emit, reply: content, ...(memoryTurn ? { staged: memoryTurn } : {}) });
       emit({ type: "final", text: content });
       return { kind: "direct" };
     } catch (error) {
@@ -717,6 +756,8 @@ export class MainAgent {
       if (checkpoint.status === "paused" || checkpoint.status === "awaiting_approval") {
         return { kind: "paused", checkpoint };
       }
+      // Only a delegation that ran to the end writes to the memory. Paused, cancelled or failed ones leave it alone.
+      if (checkpoint.status === "completed") this.rememberDelegated(sessionId, original, effort, checkpoint, emit);
       return this.finish(sessionId, checkpoint, emit, answer, synthesisNote);
     } catch (error) {
       const failure = describeFailure(error);
@@ -899,25 +940,161 @@ export class MainAgent {
   }
 
   /**
-   * Ends a turn's memory work, the same way in every mode: applies what the memory tools staged, then what the host
-   * itself extracts from the user's message, and tells the user what changed. The extraction does not depend on the
-   * model having called anything. A reply that claims a save while nothing was saved is contradicted in the notice.
+   * Ends a turn before its reply is shown: applies what the memory tools staged, lets the host capture what the user
+   * said, and makes the reply honest. Returns the reply, corrected when it claims something that did not happen.
    * Never called for a turn that failed or for a voice turn dismissed as noise.
    */
-  private settleMemory(c: { input: MainRequest; message: string; emit: Emit; reply?: string; staged?: MemoryTurn }): void {
+  private async closeTurn(c: MemoryScope & { emit: Emit; reply: string; acted: boolean; staged?: MemoryTurn; exhausted?: boolean }): Promise<string> {
+    let reply = c.reply;
+    // An interface command the host recognizes never reaches this point (it ran before the model), so there is no
+    // deterministic shortcut left to try: a claim with no action behind it is simply false.
+    if (this.options.tool && !c.acted && claimsInterfaceChange(reply)) {
+      reply = honestReply(reply, claimsInterfaceChange, honesty.interface);
+      this.diagnose(`VOID [honesty] sessão=${c.sessionId} interface: a resposta afirmou uma ação que não aconteceu`);
+    }
     const { memory } = this.options;
-    if (!memory) return;
-    let changes: MemoryCommit = { added: [], updated: [], deleted: [], failed: 0, known: 0 };
+    if (!memory) return reply;
+    let changes = noMemoryChange;
     try { if (c.staged) changes = c.staged.commit(); } catch { this.issue("memory"); }
+    const tell = (written: MemoryCommit) => {
+      const notice = describeMemoryCommit(written);
+      if (notice) c.emit({ type: "memory", text: notice });
+    };
+    const claims = claimsMemoryChange(reply);
+    // A message that carries a secret is never handed to the capture, whoever asks.
+    const secret = detectSecret(c.message);
     try {
-      const extracted = applyExtracted(memory, extractMemories(c.message), { sessionId: c.input.sessionId, turnId: c.input.turnId });
-      changes = { added: [...changes.added, ...extracted.added], updated: [...changes.updated, ...extracted.updated],
-        deleted: changes.deleted, failed: changes.failed + extracted.failed, known: changes.known + extracted.known };
+      if (secret) {
+        this.diagnose(`VOID [memory-write] sessão=${c.sessionId} via=none resultado=skipped:secret`);
+      } else if (!this.options.memoryAgent) {
+        changes = merged(changes, this.rulesMemory(c, memory));
+      } else if (c.exhausted) {
+        // The turn spent its call budget: no extra model call, the fixed rules still run.
+        changes = merged(changes, this.rulesMemory(c, memory, "skipped:budget"));
+      } else if (claims && !wrote(changes)) {
+        // The reply says something was saved and nothing was yet: find out now, before the reply is shown.
+        changes = merged(changes, await this.agentMemory(c, memory, changes));
+      } else {
+        // The usual case: after the reply, without adding to what the user waits for.
+        const before = changes;
+        this.defer(c.sessionId, async () => tell(await this.agentMemory(c, memory, before)));
+      }
     } catch { this.issue("memory"); }
     if (changes.failed) this.issue("memory");
-    const notice = describeMemoryCommit(changes) ?? (c.reply !== undefined && changes.known === 0 && claimsSaved(c.reply)
-      ? "Memória: nada foi salvo nesta resposta." : undefined);
-    if (notice) c.emit({ type: "memory", text: notice });
+    tell(changes);
+    if (claims && !wrote(changes)) {
+      reply = honestReply(reply, claimsMemoryChange, secret ? honesty.secret : honesty.memory);
+      this.diagnose(`VOID [honesty] sessão=${c.sessionId} memória: a resposta afirmou uma gravação que não aconteceu`);
+    } else if (secret && asksToRemember(c.message)) {
+      c.emit({ type: "memory", text: `Memória: não guardo esse tipo de dado (${secret}). Nada foi salvo.` });
+    }
+    return reply;
+  }
+
+  /** What the user said recently in this session, oldest first, ending with the current message. */
+  private userText(scope: MemoryScope): string[] {
+    let earlier: string[] = [];
+    try {
+      earlier = this.conversations.history(scope.sessionId, 2).flatMap(({ role, content }) => role === "user" ? [content.slice(0, 1_200)] : []);
+    } catch { this.issue("history"); }
+    return [...earlier.filter((text) => text !== scope.message), scope.message];
+  }
+
+  private memoryTurn(scope: MemoryScope, memory: MemoryStore): MemoryTurn {
+    return memoryTools({ store: memory, sessionId: scope.sessionId, ...(scope.turnId ? { turnId: scope.turnId } : {}), userText: this.userText(scope) });
+  }
+
+  /** Capture by the fixed rules: no model call. Also what remains when the memory agent cannot run. */
+  private rulesMemory(scope: MemoryScope, memory: MemoryStore, outcome = "ok"): MemoryCommit {
+    const turn = this.memoryTurn(scope, memory);
+    const refused = stageExtracted(extractMemories(scope.message), turn);
+    const changes = turn.commit();
+    this.diagnose(`VOID [memory-write] sessão=${scope.sessionId} via=rules resultado=${outcome} salvos=${changes.added.length} ` +
+      `atualizados=${changes.updated.length} apagados=${changes.deleted.length} recusados=${refused + changes.failed}`);
+    return changes;
+  }
+
+  /**
+   * The memory agent: one short governed model call, with its own cap and its own "memory" role in the telemetry,
+   * that proposes what to keep from what the user said. Invalid JSON gets one retry. It never fails the turn: when
+   * the call cannot be made or cannot be read, the fixed rules run instead.
+   */
+  private async agentMemory(scope: MemoryScope, memory: MemoryStore, written: MemoryCommit): Promise<MemoryCommit> {
+    const turn = this.memoryTurn(scope, memory);
+    let outcome = "ok";
+    let refused = 0;
+    try {
+      const ranked = memory.search(scope.message, { limit: 20, kinds: ["profile", "fact"] });
+      const seen = new Set(ranked.map(({ id }) => id));
+      const recent = memory.list().filter(({ id, kind }) => kind !== "summary" && !seen.has(id))
+        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+      const payload = memoryAgentInput({ userMessages: this.userText(scope), records: [...ranked, ...recent].slice(0, memoryAgentRecords),
+        written: [...written.added, ...written.updated].map(({ text }) => text) });
+      const maxOutputTokens = outputLimit(Math.min(memoryAgentTokens, scope.route.maxOutputTokens ?? memoryAgentTokens), scope.limits.outputTokens);
+      const ask = (extra: ModelMessage[]) => withGenerationTrace({ ...scope.trace, role: "memory" }, () =>
+        this.governance.planRequest(this.router, scope.route.providerId, {
+          model: scope.route.model, ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
+          ...(scope.route.temperature === undefined ? {} : { temperature: scope.route.temperature }),
+          ...(scope.route.reasoning === undefined ? {} : { reasoning: scope.route.reasoning }),
+          // No response_format: free models do not always accept it. The reply is parsed with tolerance instead.
+          messages: [{ role: "system", content: memoryAgentPrompt }, { role: "user", content: payload }, ...extra],
+        }, scope.limits, AbortSignal.timeout(memoryAgentTimeoutMs)));
+      const first = (await ask([])).response.content;
+      let ops: MemoryOp[];
+      try { ops = parseMemoryOps(first); }
+      catch {
+        outcome = "retried";
+        ops = parseMemoryOps((await ask([{ role: "assistant", content: first.slice(0, 600) },
+          { role: "user", content: "Isso não é JSON válido. Responda só com a lista JSON de operações, ou []." }])).response.content);
+      }
+      refused = stageMemoryOps(ops, turn, scope.message);
+    } catch (error) {
+      const { category, code } = describeFailure(error);
+      outcome = "fallback:" + (error instanceof ExecutionError ? category + (code ? ":" + code : "") : "invalid_json");
+      refused += stageExtracted(extractMemories(scope.message), turn);
+    }
+    const changes = turn.commit();
+    this.diagnose(`VOID [memory-write] sessão=${scope.sessionId} via=agent resultado=${outcome} salvos=${changes.added.length} ` +
+      `atualizados=${changes.updated.length} apagados=${changes.deleted.length} recusados=${refused + changes.failed}`);
+    return changes;
+  }
+
+  /** A delegated plan that completed: capture from the original request. Never for paused, cancelled or failed runs. */
+  private rememberDelegated(sessionId: string, original: string, effort: ExplicitEffort, checkpoint: ExecutionCheckpoint, emit: Emit): void {
+    const { memory } = this.options;
+    if (!memory || detectSecret(original)) return;
+    try {
+      const routes = this.options.routesForEffort?.(effort);
+      const scope: MemoryScope = { sessionId, message: original, limits: checkpoint.limits,
+        route: routes?.memory ?? routes?.conversation ?? routes?.decision ?? this.defaultRoute(),
+        trace: { sessionId, executionId: checkpoint.id, effort, role: "memory" } };
+      const tell = (changes: MemoryCommit) => {
+        const notice = describeMemoryCommit(changes);
+        if (notice) emit({ type: "memory", text: notice });
+      };
+      if (this.options.memoryAgent) this.defer(sessionId, async () => tell(await this.agentMemory(scope, memory, noMemoryChange)));
+      else tell(this.rulesMemory(scope, memory));
+    } catch { this.issue("memory"); }
+  }
+
+  /** Runs a capture after the current turn has answered. A failure costs only the capture. */
+  private defer(sessionId: string, work: () => Promise<void>): void {
+    const next: Promise<void> = (this.pendingMemory.get(sessionId) ?? Promise.resolve())
+      .then(() => new Promise<void>((resolve) => { setImmediate(resolve); }))
+      .then(work)
+      .catch(() => { this.issue("memory"); })
+      .finally(() => { if (this.pendingMemory.get(sessionId) === next) this.pendingMemory.delete(sessionId); });
+    this.pendingMemory.set(sessionId, next);
+  }
+
+  /** Resolves when no memory capture is running. For shutdown and for tests. */
+  async settled(): Promise<void> {
+    await Promise.all([...this.pendingMemory.values()]);
+  }
+
+  /** Diagnostics for VOID_DEBUG_MEMORY=1: counts and outcomes, never stored text. */
+  private diagnose(line: string): void {
+    if (process.env.VOID_DEBUG_MEMORY === "1") console.error(line);
   }
 
   private reportDecision(diagnostic: DecisionDiagnostic): void {

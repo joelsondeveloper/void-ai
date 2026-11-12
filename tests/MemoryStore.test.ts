@@ -100,7 +100,13 @@ for (const mode of ["fts5", "fallback"] as const) {
     rejects(() => store.add({ kind: "summary", text: "c".repeat(memoryLimits.summaryChars + 1) }), "too_long");
     for (let index = store.count(); index < memoryLimits.records; index++) store.add({ kind: "fact", text: `fato número ${index}` });
     assert.equal(store.count(), memoryLimits.records);
-    rejects(() => store.add({ kind: "fact", text: "um fato a mais" }), "full");
+    // Changed in v2: at the limit, the oldest session summary makes room for what the user said. This used to be
+    // refused. Facts and profile lines are still never dropped automatically.
+    assert.equal(store.add({ kind: "fact", text: "um fato a mais" }).created, true);
+    assert.deepEqual(store.list("summary"), []);
+    assert.equal(store.count(), memoryLimits.records);
+    rejects(() => store.add({ kind: "fact", text: "mais um ainda" }), "full");
+    rejects(() => store.add({ kind: "summary", text: "resumo sem lugar" }), "full");
     assert.throws(() => store.add({ kind: "profile", text: "outro" }), /limite de 500 registros.*Nada foi apagado/);
     // A duplicate still resolves to the existing record when full.
     assert.equal(store.add({ kind: "fact", text: "Fato número 7" }).created, false);

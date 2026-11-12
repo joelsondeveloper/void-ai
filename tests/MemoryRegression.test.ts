@@ -94,9 +94,9 @@ test("VOID_DEBUG_MEMORY=1 logs counts, ids and block size per turn, never the st
       "ids=[0-9a-f-]{36} bloco=\\d+ caracteres$"));
   }
   assert.ok(debug.every((line) => !/Florarte|trabalha|usuário/i.test(line)));
-  // The failed summary of session A is reported too, by category only. Only the tools mode writes summaries.
+  // The failed summary of session A is reported too, by category only. Since v2 both modes write summaries.
   assert.deepEqual(lines.filter((line) => line.startsWith("VOID [memory-summary]")),
-    ["VOID [memory-summary] sessão=session-a falhou: internal_error"]);
+    Array(2).fill("VOID [memory-summary] sessão=session-a falhou: internal_error"));
 });
 
 test("relevance orders the facts but never excludes them; the most recent unrelated ones fill the budget", async () => {

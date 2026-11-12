@@ -375,9 +375,12 @@ export class SQLiteMemoryStore implements MemoryStore {
     const row = this.db.prepare("SELECT * FROM memory_records WHERE normalized = ?").get(normalized);
     const existing = row ? this.read(row) : undefined;
     if (!existing) {
-      // A summary replaces the oldest one once the rotation is full, so it does not grow the store.
-      const rotates = input.kind === "summary" && this.list("summary").length >= memoryLimits.summaries;
-      if (!rotates && this.count() >= memoryLimits.records) {
+      // A summary replaces the oldest one once the rotation is full, so it does not grow the store. A fact or a
+      // profile line may take the place of the oldest summary (see insert); it never pushes out another fact.
+      const summaries = this.list("summary").length;
+      const rotates = input.kind === "summary" && summaries >= memoryLimits.summaries;
+      const evicts = input.kind !== "summary" && summaries > 0;
+      if (!rotates && !evicts && this.count() >= memoryLimits.records) {
         throw new MemoryError("full", `A memória chegou ao limite de ${memoryLimits.records} registros. ` +
           "Peça ao usuário para apagar registros antigos antes de gravar novos. Nada foi apagado automaticamente.");
       }
@@ -391,6 +394,12 @@ export class SQLiteMemoryStore implements MemoryStore {
 
   private insert(row: { kind: MemoryKind; text: string; normalized: string; at: string; origin: MemoryOrigin;
     sourceTurnId: string | undefined; sessionId: string | undefined; topic?: string }): string {
+    // At the limit, the oldest session summary makes room. Summaries are the least important records and can be
+    // written again; what the user said about themselves is never dropped automatically.
+    if (row.kind !== "summary" && this.count() >= memoryLimits.records) {
+      const oldest = this.db.prepare("SELECT id FROM memory_records WHERE kind = 'summary' ORDER BY created_at, rowid LIMIT 1").get();
+      if (typeof oldest?.id === "string") this.remove(oldest.id);
+    }
     const id = randomUUID();
     this.db.prepare(`INSERT INTO memory_records (id, kind, text, normalized, created_at, updated_at, source_turn_id, session_id, origin, topic)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, row.kind, row.text, row.normalized, row.at, row.at,

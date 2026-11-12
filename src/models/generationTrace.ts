@@ -6,7 +6,7 @@ export interface GenerationTrace {
   sessionId: string;
   executionId: string;
   effort: ExplicitEffort;
-  role: "decision" | "specialist" | "synthesis";
+  role: "decision" | "specialist" | "synthesis" | "memory";
   stepId?: string;
   agentId?: string;
 }

@@ -58,8 +58,8 @@ export function selectOpenRouterRoutes(effort: ExplicitEffort, env: NodeJS.Proce
       (role === "RESEARCH" || (role === "SYNTHESIS" && effort === "medium"));
     const requestedEffort = config("REASONING_EFFORT");
     // Ultra as the conversation model was measured with reasoning off, which the catalog lists as optional for it.
-    const quickStructuredRoute = (role === "MAIN" || role === "SYNTHESIS") &&
-      (model === freeModelIds.superVl || (role === "MAIN" && model === freeModelIds.ultra) ||
+    const quickStructuredRoute = (role === "MAIN" || role === "SYNTHESIS" || role === "MEMORY") &&
+      (model === freeModelIds.superVl || ((role === "MAIN" || role === "MEMORY") && model === freeModelIds.ultra) ||
         ((effort === "low" || effort === "medium") && (model === freeModelIds.dots || model === freeModelIds.lightning)));
     const disableReasoning = quickStructuredRoute && requestedEffort === undefined && reasoningMax === undefined;
     const reasoningEffort = requestedEffort ??
@@ -89,6 +89,9 @@ export function selectOpenRouterRoutes(effort: ExplicitEffort, env: NodeJS.Proce
     // rounds. It stays out of `decision` because it does not accept response_format and failed the JSON coordinator.
     // VOID_MAIN_MODEL overrides both.
     conversation: route("MAIN", freeModelIds.ultra),
+    // The memory agent's short call after each turn. VOID_MEMORY_MODEL overrides it; by default it follows the
+    // conversation model that measured best.
+    memory: route("MEMORY", freeModelIds.ultra),
     synthesis: route("SYNTHESIS", freeModelIds.superVl),
     ...Object.fromEntries(agents.flatMap(({ id, model }) => model
       ? [[id, route(model.configKey, model.fallback)]] : [])),

@@ -9,7 +9,9 @@ import { DatabaseSync } from "node:sqlite";
 import test, { type TestContext } from "node:test";
 import { MainAgent, type MainAgentOptions, type MainMessage, type MainRequest } from "../src/agents/MainAgent.js";
 import { SQLiteConversationStore } from "../src/conversation/ConversationStore.js";
-import { applyExtracted, claimsSaved, extractionWindow, extractMemories } from "../src/conversation/memoryExtractor.js";
+import { honesty } from "../src/conversation/honesty.js";
+import { claimsSaved, extractionWindow, extractMemories, stageExtracted } from "../src/conversation/memoryExtractor.js";
+import { memoryTools } from "../src/conversation/voidTools.js";
 import { MemoryError, type MemoryStore, SQLiteMemoryStore } from "../src/conversation/MemoryStore.js";
 import { SQLiteCheckpointStore } from "../src/governance/CheckpointStore.js";
 import { ExecutionGovernance } from "../src/governance/ExecutionGovernance.js";
@@ -166,10 +168,14 @@ test("a database created before origin and topic existed is migrated on open, ke
   const store = new SQLiteMemoryStore(filename);
   t.after(() => store.close());
   // The old record takes the topic instead of being duplicated, and can then be updated in place.
-  assert.deepEqual(applyExtracted(store, extractMemories("eu trabalho na Florarte"), { sessionId: "b" }),
-    { added: [], updated: [], known: 1, failed: 0 });
+  const capture = (message: string) => {
+    const turn = memoryTools({ store, sessionId: "b", userText: [message] });
+    stageExtracted(extractMemories(message), turn);
+    return turn.commit();
+  };
+  assert.deepEqual(capture("eu trabalho na Florarte"), { added: [], updated: [], deleted: [], failed: 0, known: 1 });
   assert.equal(store.byTopic("trabalho")?.id, "00000000-0000-4000-8000-000000000001");
-  assert.equal(applyExtracted(store, extractMemories("agora trabalho na Acme"), { sessionId: "b" }).updated[0]?.text, "O usuário trabalha na Acme.");
+  assert.equal(capture("agora trabalho na Acme").updated[0]?.text, "O usuário trabalha na Acme.");
   assert.equal(store.count(), 2);
 });
 
@@ -218,7 +224,7 @@ test("\"Anotei.\" with nothing saved is contradicted; with the fact already stor
   const { ask, memory } = agent(t, file(), () => "Anotei.");
   // Nothing durable in the message and no tool call: the claim is false.
   assert.deepEqual((await ask("hoje acordei de mau humor kkk")).messages,
-    [{ type: "memory", text: "Memória: nada foi salvo nesta resposta." }, { type: "final", text: "Anotei." }]);
+    [{ type: "final", text: honesty.memory }]);
   assert.deepEqual(stored(memory), []);
   await ask("trabalho na Florarte");
   // Said again: nothing new is written, and the claim is true because the fact is there.
@@ -234,8 +240,14 @@ test("an explicit request is kept in the user's words when the model ignores it,
     'O usuário pediu para lembrar: "a reunião com o cliente é toda segunda".']]);
   const { messages } = await ask("não esquece que a senha do wifi é batata123");
   assert.equal(stored(memory).length, 1);
-  assert.deepEqual(issues, ["memory"]);
-  assert.deepEqual(messages[0], { type: "memory", text: "Memória: nada foi salvo nesta resposta." });
+  // The message is never handed to the capture, and the false "Anotado." is replaced by what is true.
+  assert.deepEqual(issues, []);
+  assert.deepEqual(messages, [{ type: "final", text: honesty.secret }]);
+  // Asked plainly, with a reply that does not claim anything: the user is still told why nothing was kept.
+  const plain = agent(t, file(), () => "Isso eu não posso guardar.");
+  assert.deepEqual((await plain.ask("lembra que a senha do wifi é batata123")).messages, [
+    { type: "memory", text: "Memória: não guardo esse tipo de dado (senha). Nada foi salvo." },
+    { type: "final", text: "Isso eu não posso guardar." }]);
 });
 
 test("when the model does call remember, the extractor marks that record instead of saving a second one", async (t) => {

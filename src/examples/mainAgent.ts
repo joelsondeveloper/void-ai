@@ -141,6 +141,7 @@ const governance = new ExecutionGovernance(runtime, checkpoints, {
 });
 const main = new MainAgent(router, registry, governance, conversations, {
   providerId: provider.id, model: selectModel("VOID_MAIN_MODEL", "main-local"), effort, routesForEffort, memory,
+  memoryAgent: live && !benchmark,
   // Same default as the web server: LIVE chat uses tool calling. The benchmark keeps measuring the JSON coordinator.
   ...(live && !benchmark && !process.env.VOID_CONVERSATION_MODE ? { conversationMode: "tools" as const } : {}),
   specialist: (task, agentContext, maxDelegations) => runtime.execute(task, agentContext, maxDelegations),
