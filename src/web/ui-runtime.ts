@@ -9,16 +9,33 @@ export const uiTools: readonly Omit<ModelTool, "prepare">[] = [
   ...["ui.openWindow", "ui.closeWindow"].map((name) => ({
     name, description: `${name}: Open or close the named panel as indicated by the tool name. Settings contains preferences, voice and behavior. Panels ${JSON.stringify(builtinWindows.map(id => ({ id, title: panelRegistry[id] })))}.`,
     example: { name, arguments: { component: "settings" } },
+    summary: name === "ui.openWindow"
+      ? "Abre um painel da interface: configurações, uso e limites, sessões ou operações."
+      : "Fecha um painel da interface que esteja aberto.",
+    parameters: { type: "object", additionalProperties: false, required: ["component"], properties: {
+      component: { type: "string", enum: builtinWindows, description: "Painel: " +
+        builtinWindows.map((id) => `${id} (${panelRegistry[id]})`).join(", ") + "." } } },
     accepts: (value: unknown) => isLocalUiToolCall(value) && value.name === name,
   })),
   { name: "ui.switchMode", description: "Switch to workspace (main interface with conversation and sessions) or focus (central ring).",
     example: { name: "ui.switchMode", arguments: { mode: "workspace" } },
+    summary: "Troca o modo da tela. O workspace é a interface completa, com conversa, sessões, configurações e painel de uso. O focus mostra só o anel central.",
+    parameters: { type: "object", additionalProperties: false, required: ["mode"], properties: {
+      mode: { type: "string", enum: ["workspace", "focus"], description: "workspace abre a interface completa; focus volta ao anel." } } },
     accepts: (value) => isLocalUiToolCall(value) && value.name === "ui.switchMode" },
   { name: "ui.resetLayout", description: "Reset the layout to Focus, closing the current panel.",
     example: { name: "ui.resetLayout", arguments: {} },
+    summary: "Restaura o layout inicial (modo focus), fechando o painel atual.",
+    parameters: { type: "object", additionalProperties: false, properties: {} },
     accepts: (value) => isLocalUiToolCall(value) && value.name === "ui.resetLayout" },
   { name: "ui.render", description: "Create, reopen or revise a visual component via AgentRenderer. Arguments: brief, optional key (slug), display (DisplaySchema), revise (boolean). The renderer can request an isolated interactive React component. Network is unavailable.",
-    example: { name: "ui.render", arguments: { brief: "User's interface request", key: "component-key" } }, accepts: isRenderToolCall },
+    example: { name: "ui.render", arguments: { brief: "User's interface request", key: "component-key" } },
+    summary: "Cria, reabre ou revisa um componente visual (tabela, gráfico, formulário, tela) pedido pelo usuário.",
+    parameters: { type: "object", additionalProperties: false, required: ["brief"], properties: {
+      brief: { type: "string", maxLength: 6000, description: "O que o usuário quer ver, com os dados e detalhes necessários." },
+      key: { type: "string", pattern: "^[a-z0-9-]{1,64}$", description: "Identificador (slug) para reabrir ou revisar o mesmo componente depois." },
+      revise: { type: "boolean", description: "true para ajustar o componente existente com essa key." } } },
+    accepts: isRenderToolCall },
 ];
 
 export interface UiCommand { response: string; action?: UiAction }

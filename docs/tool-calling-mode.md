@@ -133,3 +133,11 @@ Em transcrições de voz, o modelo responde exatamente `<ignore/>` para ruído d
 - **Modelos gratuitos.** As rotas LIVE continuam restritas a modelos `:free`, e nem todos suportam tools. Antes de adotar o modo, confira `supported_parameters` no catálogo e rode prompts reais.
 - **Memória.** Se o modelo segue as regras de recall e de gravação proativa depende do modelo: o código garante que o bloco chega, não que ele seja lido. A âncora contra prompt injection compara palavras, não sentido: uma paráfrase com sinônimos pode ser recusada (o modelo recebe o motivo e pode reescrever), e um texto injetado que repita as palavras do usuário passaria. A busca é lexical: "linter" não acha "Biome". Não existe painel de memória na interface web; a API já está pronta para ele. O comportamento proativo foi descrito ao modelo, mas não medido contra um modelo real.
 - **Fora desta fase:** jobs assíncronos (`start_job`, `check_job`, `cancel_job`) sobre o `PlanExecutor`.
+
+## Ferramentas de interface
+
+As operações `ui.*` (abrir/fechar painel, trocar modo, restaurar layout, renderizar componente) chegam ao modelo como
+`ui_openWindow`, `ui_closeWindow`, `ui_switchMode`, `ui_resetLayout` e `ui_render`. Cada uma declara um JSON Schema real
+(`parameters`, com enums de modo e de painel) e um resumo em português (`summary`) em `src/web/ui-runtime.ts`; sem isso o
+modelo recebia um objeto vazio e errava os argumentos. O prompt do modo tools acrescenta que o Void controla a interface e
+que um erro de ferramenta nunca justifica afirmar sucesso. Regressão: `tests/UiTools.test.ts`.

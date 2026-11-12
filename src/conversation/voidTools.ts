@@ -115,8 +115,8 @@ export function operationTools(input: {
       label: tool.name,
       spec: {
         name,
-        description: `${tool.description} Exemplo de argumentos: ${JSON.stringify(tool.example.arguments)}`,
-        parameters: { type: "object", additionalProperties: true, properties: {} },
+        description: `${tool.summary ?? tool.description} Exemplo de argumentos: ${JSON.stringify(tool.example.arguments)}`,
+        parameters: tool.parameters ?? { type: "object", additionalProperties: true, properties: {} },
       },
       async run(args) {
         const call = { name: tool.name, arguments: args };
