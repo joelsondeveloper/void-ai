@@ -279,6 +279,7 @@ select, input[type=number] { min-width: 0; padding: 6px 8px; border: 1px solid v
 }
 .command-heading { display: flex; justify-content: space-between; align-items: center; }
 .command-heading h1 { font-size: 16px; }
+.command-tools { display: flex; align-items: center; gap: 8px; }
 .command-overlay .feedback { margin: 0; }
 .command-overlay .voice-indicator { margin-top: 0; }
 .focus-reply { padding-block: 5px; overflow-wrap: anywhere; }

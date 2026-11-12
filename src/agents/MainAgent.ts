@@ -80,6 +80,12 @@ export interface MainAgentOptions {
   componentCatalog?: (sessionId: string) => { key: string; title: string; version: number }[];
   tool?: (call: { name: string; arguments: unknown }, resources: { sessionId: string; generate: GenerateComponent },
     context: AgentContext, maxTasks: number) => Promise<unknown>;
+  /**
+   * Recognizes a message that is nothing but a registered operation ("abre o workspace"). The model is still asked
+   * first; when the turn would end without the action (the model answered in text, failed or could not be reached),
+   * the host runs the operation itself. The call goes through the registry: only what this channel may run executes.
+   */
+  shortcut?: (message: string) => { name: string; arguments: unknown } | undefined;
   routesForEffort?: (effort: ExplicitEffort) => ModelRoutes;
   formatProgress?: (event: ProgressEvent, fallback: string) => string;
   onCommunicationIssue?: (kind: "subscriber" | "progress" | "synthesis" | "history" | "memory", executionId?: string) => void | Promise<void>;
@@ -180,12 +186,20 @@ export class MainAgent {
       if (configured) this.validateRoutes(configured);
       const routes = configured ? structuredClone(configured) : undefined;
       const decisionRoute = routes?.decision ?? this.defaultRoute();
+      // A message that is nothing but a registered interface command ("abre o workspace"). The model is asked first,
+      // like for any other message; the host runs the command itself only when the turn would end without the action.
+      const candidate = this.options.tool && tools.length ? this.options.shortcut?.(message) : undefined;
+      const plain = candidate && acceptsTool(candidate) ? candidate : undefined;
+      const rescue = (error: unknown): Promise<MainResult> => {
+        if (!plain || input.context.signal.aborted) throw error;
+        return this.runShortcut(input, message, plain, limits, emit);
+      };
       if (this.mode === "tools") {
         try {
-          return await this.converse({ input, message, emit, effort, limits, routes, route: decisionRoute });
+          return await this.converse({ input, message, emit, effort, limits, routes, route: decisionRoute, plain });
         } catch (error) {
           // The model cannot take tools. Nothing was shown yet, so the strict-JSON path can still answer.
-          if (describeFailure(error).code !== "tools_unsupported") throw error;
+          if (describeFailure(error).code !== "tools_unsupported") return rescue(error);
           // Never fall back silently: without this line the new mode would look like it does nothing.
           if (!this.warnedModels.has(decisionRoute.model)) {
             this.warnedModels.add(decisionRoute.model);
@@ -272,7 +286,8 @@ export class MainAgent {
       let failedDecisionTokens = 0;
       const plan = (request: ModelRequest) => this.governance.planRequest(this.router,
         decisionRoute.providerId, request, limits, decisionSignal);
-      const { response, planning } = await withGenerationTrace(trace, async () => {
+      let generated: Awaited<ReturnType<typeof plan>>;
+      try { generated = await withGenerationTrace(trace, async () => {
         try { return await plan(decisionRequest); }
         catch (error) {
           decisionSignal.throwIfAborted();
@@ -294,7 +309,8 @@ export class MainAgent {
             validateContent: (content) => { decisionRequest.validateContent?.(content); },
           });
         }
-      }).finally(() => clearTimeout(warning));
+      }).finally(() => clearTimeout(warning)); } catch (error) { return rescue(error); }
+      const { response, planning } = generated;
       if (decisionAttempts > 1) {
         planning.elapsedMs = Math.ceil(performance.now() - startedAt);
         planning.failedAttempts = decisionAttempts - 1;
@@ -310,12 +326,13 @@ export class MainAgent {
       } catch (error) {
         const { category, code } = describeFailure(error);
         this.reportDecision({ ...diagnostic, outcome: "rejected", failure: { category, ...(code ? { code } : {}) } });
-        throw error;
+        return rescue(error);
       }
       this.reportDecision({ ...diagnostic, outcome: decision.mode });
-      if (decision.mode === "ignore") return { kind: "ignored" };
+      // A plain interface command the model answered in text, delegated or dismissed is still run, by the host.
       const toolCall = decision.mode === "tool" ? decision.call : decision.mode === "display"
-        ? { name: "ui.render", arguments: { brief: message, display: decision.schema } } : undefined;
+        ? { name: "ui.render", arguments: { brief: message, display: decision.schema } } : plain;
+      if (decision.mode === "ignore" && !toolCall) return { kind: "ignored" };
       if (toolCall && this.options.tool) {
         const signal = this.visualSignal(input.context.signal, limits, planning);
         const result = await this.options.tool(toolCall, {
@@ -324,16 +341,14 @@ export class MainAgent {
             planning, decisionAttempts, failedDecisionTokens),
         }, { ...input.context, executionId, signal }, limits.steps);
         signal.throwIfAborted();
-        if (!result || typeof result !== "object" || !("response" in result) || typeof result.response !== "string" ||
-            ("action" in result && !isUiAction(result.action))) throw new ExecutionError({ category: "invalid_response",
-          message: "A ferramenta retornou um resultado inválido.", retryable: false });
-        const action = "action" in result ? result.action as UiAction : undefined;
-        this.conversations.recordDirect(input.sessionId, message, result.response, input.turnId, planning.servedModel, !!action);
-        if (action) emit({ type: "ui", text: result.response, action });
-        this.settleMemory({ input, message, emit, reply: result.response });
-        emit({ type: "final", text: result.response });
+        const { response: text, action } = this.toolOutcome(result);
+        this.conversations.recordDirect(input.sessionId, message, text, input.turnId, planning.servedModel, !!action);
+        if (action) emit({ type: "ui", text, action });
+        this.settleMemory({ input, message, emit, reply: text });
+        emit({ type: "final", text });
         return { kind: "direct" };
       }
+      if (decision.mode === "ignore") return { kind: "ignored" };
       if (decision.mode === "tool" || decision.mode === "display") throw new ExecutionError({ category: "permission_denied",
         message: "Execução de ferramentas indisponível neste canal.", retryable: false });
       if (decision.mode === "direct") {
@@ -356,12 +371,42 @@ export class MainAgent {
     });
   }
 
+  private toolOutcome(result: unknown): { response: string; action?: UiAction } {
+    if (!result || typeof result !== "object" || !("response" in result) || typeof result.response !== "string" ||
+        ("action" in result && !isUiAction(result.action))) throw new ExecutionError({ category: "invalid_response",
+      message: "A ferramenta retornou um resultado inválido.", retryable: false });
+    return { response: result.response, ...("action" in result ? { action: result.action as UiAction } : {}) };
+  }
+
+  /** Runs an operation the host recognized in the message itself. No model is called and no call budget is spent. */
+  private async invokeShortcut(input: MainRequest, call: { name: string; arguments: unknown }, limits: ExecutionLimits) {
+    const run = this.options.tool;
+    if (!run) throw new ExecutionError({ category: "permission_denied", message: "Execução de ferramentas indisponível neste canal.", retryable: false });
+    const signal = AbortSignal.any([input.context.signal, AbortSignal.timeout(modelTimeoutMs)]);
+    const result = await run(call, { sessionId: input.sessionId, generate: async () => {
+      throw new ExecutionError({ category: "budget_exceeded", message: "Este comando não gera interface.", retryable: false });
+    } }, { ...input.context, executionId: randomUUID(), signal }, limits.steps);
+    signal.throwIfAborted();
+    return this.toolOutcome(result);
+  }
+
+  /** The whole turn is the host's command: used when the model could not even be asked (provider down, rate limit). */
+  private async runShortcut(input: MainRequest, message: string, call: { name: string; arguments: unknown },
+    limits: ExecutionLimits, emit: Emit): Promise<MainResult> {
+    const { response, action } = await this.invokeShortcut(input, call, limits);
+    this.conversations.recordDirect(input.sessionId, message, response, input.turnId, undefined, !!action);
+    if (action) emit({ type: "ui", text: response, action });
+    emit({ type: "final", text: response });
+    return { kind: "direct" };
+  }
+
   /**
    * Conversation as a tool-calling loop. The model answers in free text and calls tools (specialists, interface
    * operations) only when they help; results come back to the same conversation, so the final reply keeps its voice.
    */
   private async converse(c: { input: MainRequest; message: string; emit: Emit; effort: ExplicitEffort;
-    limits: ExecutionLimits; routes: ModelRoutes | undefined; route: ModelRoute }): Promise<MainResult> {
+    limits: ExecutionLimits; routes: ModelRoutes | undefined; route: ModelRoute;
+    plain?: { name: string; arguments: unknown } | undefined }): Promise<MainResult> {
     const { input, message, emit, effort, limits, routes, route } = c;
     const executionId = randomUUID();
     const trace: GenerationTrace = { sessionId: input.sessionId, executionId, effort, role: "decision" };
@@ -454,15 +499,24 @@ export class MainAgent {
       }));
       this.reportDecision({ trace, requestedModel: route.model, ...(returnedModel ? { returnedModel } : {}),
         outcome: result.toolCalls > 0 ? "tool" : "direct" });
+      let content = result.content;
+      // The turn is ending without the interface action a plain command asked for: the model answered in text
+      // (sometimes claiming it had opened it) or gave up after a bad call. The host runs the command itself, and its
+      // result replaces the model's text.
+      if (c.plain && actions.length === 0) {
+        const outcome = await this.invokeShortcut(input, c.plain, limits);
+        if (outcome.action) actions.push({ text: outcome.response, action: outcome.action });
+        content = outcome.response;
+      }
       // Background noise leaves no trace: no history and nothing the memory tools staged.
-      if (voice && result.content === ignoreSentinel) return { kind: "ignored" };
+      if (voice && content === ignoreSentinel) return { kind: "ignored" };
 
       try {
-        this.conversations.recordDirect(input.sessionId, message, result.content, input.turnId, servedModel, actions.length > 0);
+        this.conversations.recordDirect(input.sessionId, message, content, input.turnId, servedModel, actions.length > 0);
       } catch { this.issue("history"); }
       for (const { text, action } of actions) emit({ type: "ui", text, action });
-      this.settleMemory({ input, message, emit, reply: result.content, ...(memoryTurn ? { staged: memoryTurn } : {}) });
-      emit({ type: "final", text: result.content });
+      this.settleMemory({ input, message, emit, reply: content, ...(memoryTurn ? { staged: memoryTurn } : {}) });
+      emit({ type: "final", text: content });
       return { kind: "direct" };
     } catch (error) {
       const { category, code } = describeFailure(error, signal);

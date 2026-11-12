@@ -591,9 +591,15 @@ export function Console() {
       {commandOpen && <section className="command-overlay" aria-label="Comando de texto e voz">
         <div className="command-heading">
           <h1>Comando</h1>
-          <button className="icon-button" type="button" aria-label="Fechar comando" onClick={() => {
-            setCommandOpen(false); focusTrigger.current?.focus();
-          }}><Icon name="close"/></button>
+          <div className="command-tools">
+            {/* The way into the full interface that does not depend on a model understanding the request. */}
+            <button className="button" type="button" onClick={() => applyLayout({ type: "switch_mode", mode: "workspace" })}>
+              <Icon name="workspace"/> Abrir workspace
+            </button>
+            <button className="icon-button" type="button" aria-label="Fechar comando" onClick={() => {
+              setCommandOpen(false); focusTrigger.current?.focus();
+            }}><Icon name="close"/></button>
+          </div>
         </div>
         {feedback}
         {commandForm}

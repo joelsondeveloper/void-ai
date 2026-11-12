@@ -387,6 +387,23 @@ test("Focus · narrow viewport clamps the window and renders the validated displ
   assert.equal(await display.count(), 0);
 });
 
+test("Focus · the workspace opens by the overlay button and by a plain sentence the simulator has no script for", { timeout: 40_000 }, async (t) => {
+  const page = await open(t, { width: 1280, height: 800 });
+  await page.locator(".focus-orbit .singularity").waitFor();
+  await page.getByRole("button", { name: "Abrir comando de texto e voz" }).click();
+  await page.getByRole("button", { name: "Abrir workspace" }).click();
+  await page.locator(".shell.wide").waitFor();
+  assert.ok(await page.locator(".topbar").isVisible());
+  await page.getByRole("button", { name: "Focus" }).click();
+  await page.locator(".focus-orbit .singularity").waitFor();
+  // The MOCK provider only knows "modo workspace". This sentence works because the host runs it, not the model.
+  await command(page, "abre o workspace");
+  await page.locator(".shell.wide").waitFor();
+  assert.equal(await page.locator(".assistant-message, .user-message").count(), 0, "interface turns stay out of the chat");
+  await command(page, "volta pro anel");
+  await page.locator(".focus-orbit .singularity").waitFor();
+});
+
 test("LIVE without a provider rejects semantic chat dispatch", { timeout: 45_000 }, async (t) => {
   const live = await startServer(join(directory, "live.sqlite"), "LIVE");
   liveServer = live.server;

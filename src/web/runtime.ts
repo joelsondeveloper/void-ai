@@ -23,6 +23,7 @@ import { createAccountReader, emptyAccount } from "./provider-accounts.js";
 import type { ProviderDashboard } from "./provider-contracts.js";
 import { createVoiceService, voiceConfiguration } from "./voice.js";
 
+import { interfaceCommand } from "./ui-intents.js";
 import { UiRuntimeService } from "./ui-runtime.js";
 import { ComponentRegistry } from "./ComponentRegistry.js";
 import { previewPermission } from "./render-contracts.js";
@@ -94,6 +95,8 @@ export function createWebRuntime(options: {
     ...defaults, routesForEffort: routes, componentCatalog: (sessionId) => components.catalog(sessionId), memory,
     // Failures the user never sees (a summary that did not come, a memory write refused) at least reach the server log.
     onCommunicationIssue: (kind) => { console.warn(`VOID web: falha interna (${kind}); a conversa seguiu sem essa parte.`); },
+    // Plain interface commands ("abre o workspace") always reach the interface: the host runs them when the model does not.
+    shortcut: interfaceCommand,
     specialist: (task, context, maxDelegations) => agentRuntime.execute(task, context, maxDelegations),
     tool: (call, resources, context, maxTasks) => agentRuntime.invokeTool("main-agent", call, resources, context, {
       maxTasks,
