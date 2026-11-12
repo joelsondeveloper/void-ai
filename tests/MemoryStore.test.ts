@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
-import { MemoryError, memoryLimits, normalizeMemoryText, SQLiteMemoryStore } from "../src/conversation/MemoryStore.js";
+import { MemoryError, memoryLimits, normalizeMemoryText, searchStem, searchTerms, SQLiteMemoryStore } from "../src/conversation/MemoryStore.js";
 
 function file(t: TestContext): string {
   const directory = mkdtempSync(join(tmpdir(), "void-memory-"));
@@ -207,4 +207,28 @@ test("the memory tables live in the same SQLite file as the conversation and are
   for (const name of ["memory_records", "memory_summary_marks"]) {
     assert.match(String(tables.find((row) => row.name === name)?.sql), /\)\s*STRICT$/);
   }
+});
+
+for (const mode of ["fts5", "fallback"] as const) {
+  test(`[${mode}] Portuguese search: stopwords out, accents folded, "trabalho" meets "trabalha"`, (t) => {
+    const store = open(t, mode);
+    const job = store.add({ kind: "fact", text: "O usuário trabalha na Florarte." }).record;
+    store.add({ kind: "fact", text: "Gosta de café coado" });
+    store.add({ kind: "profile", text: "Treina calistenia" });
+    for (const query of ["me diga onde eu trabalho", "onde eu trabalho?", "Florarte", "você sabe alguma coisa sobre a FLORARTE?",
+      "quero trabalhar menos", "trabalhou ontem"]) {
+      assert.deepEqual(store.search(query).map(({ id }) => id), [job.id], query);
+    }
+    // Questions made only of stopwords, and unrelated topics, bring nothing back.
+    for (const query of ["me diga onde", "você sabe?", "o que é isso", "receita de bolo", "não"]) {
+      assert.deepEqual(store.search(query), [], query);
+    }
+  });
+}
+
+test("search terms drop Portuguese stopwords even when written with accents", () => {
+  assert.deepEqual(searchTerms("Você não sabe onde eu trabalho? Diga aí"), ["trabalho"]);
+  assert.deepEqual(searchTerms("Também já está na memória"), []);
+  assert.equal(searchStem("trabalhar"), "traba");
+  assert.equal(searchStem("café"), "café");
 });

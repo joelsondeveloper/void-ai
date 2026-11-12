@@ -85,16 +85,27 @@ export function normalizeMemoryText(text: string): string {
   return text.normalize("NFC").toLowerCase().replace(/[\p{P}\p{S}]+/gu, " ").replace(/\s+/g, " ").trim();
 }
 
-const stopwords = new Set(("a o e é as os um uma uns umas de do da dos das no na nos nas em ao aos à às por pra pro para com sem " +
+const fold = (text: string) => text.normalize("NFD").replace(/\p{M}+/gu, "").toLowerCase();
+
+// Folded the same way as the terms (no accents), otherwise "não" or "você" would never match.
+const stopwords = new Set(fold("a o e é as os um uma uns umas de do da dos das no na nos nas num numa em ao aos à às por pra pro para com sem " +
   "que se eu tu ele ela nós vós eles elas me te lhe mim meu minha meus minhas seu sua seus suas isso isto aquilo esse essa este esta " +
-  "não sim mais muito já também como quando onde qual quais ou mas foi ser ter tem está estou sou vai vou " +
-  "the an and or of to in on at for is are was be it this that my your i you me we with").split(" "));
+  "não sim mais muito já também como quando onde qual quais quem ou mas foi ser ter tem está estou sou vai vou " +
+  "você vc vcs diga diz dizer fala falar conta contar sabe saber sei lembra lembre lembrar lembrou memória alguma algum alguém " +
+  "coisa coisas sobre aqui aí lá então porque pq tudo nada até agora ainda só pode posso favor por favor oi olá " +
+  "the an and or of to in on at for is are was be it this that my your i you me we with what where who do does tell know").split(" "));
 
 /** Accent-insensitive search terms, the same way the FTS5 tokenizer (unicode61, remove_diacritics 2) splits text. */
 export function searchTerms(text: string): string[] {
-  const words = text.normalize("NFD").replace(/\p{M}+/gu, "").toLowerCase().split(/[^\p{L}\p{N}]+/u);
+  const words = fold(text).split(/[^\p{L}\p{N}]+/u);
   return [...new Set(words.filter((word) => word.length >= 2 && !stopwords.has(word)))].slice(0, 16);
 }
+
+/**
+ * A light Portuguese stem: the first five letters, so "trabalho", "trabalha" and "trabalhar" meet on "traba".
+ * Shorter terms are kept whole. Search matches any word that starts with the stem, in both search paths.
+ */
+export const searchStem = (term: string) => term.length > 5 ? term.slice(0, 5) : term;
 
 function fts5Available(db: DatabaseSync): boolean {
   try {
@@ -233,7 +244,7 @@ export class SQLiteMemoryStore implements MemoryStore {
     const placeholders = kinds.map(() => "?").join(", ");
     if (this.searchMode === "fts5") {
       // Terms only hold letters and digits, so quoting them is enough to keep FTS5 syntax out of the query.
-      const match = terms.map((term) => `"${term}"*`).join(" OR ");
+      const match = [...new Set(terms.map(searchStem))].map((stem) => `"${stem}"*`).join(" OR ");
       return this.db.prepare(`
         SELECT r.* FROM memory_fts f JOIN memory_records r ON r.id = f.id
         WHERE memory_fts MATCH ? AND r.kind IN (${placeholders})
@@ -243,7 +254,7 @@ export class SQLiteMemoryStore implements MemoryStore {
     const scored = this.db.prepare(`SELECT *, rowid AS position FROM memory_records WHERE kind IN (${placeholders})`).all(...kinds)
       .map((row) => {
         const words = searchTerms(String(row.text));
-        const score = terms.filter((term) => words.some((word) => word.startsWith(term))).length;
+        const score = [...new Set(terms.map(searchStem))].filter((stem) => words.some((word) => word.startsWith(stem))).length;
         return { row, score, position: Number(row.position) };
       })
       .filter(({ score }) => score > 0);
