@@ -21,7 +21,8 @@ const providerId = "test-local";
 const call = (name: string, args: unknown, id = "call_1"): ModelToolCall => ({ id, name, arguments: JSON.stringify(args) });
 
 // The real registry wiring of the web runtime (renderer, UI service, operations), with a scripted model.
-function fixture(t: TestContext, handle: (request: ModelRequest) => { content?: string; toolCalls?: ModelToolCall[] },
+type Scripted = { content?: string; toolCalls?: ModelToolCall[] };
+function fixture(t: TestContext, handle: (request: ModelRequest) => Scripted | Promise<Scripted>,
   overrides: Partial<MainAgentOptions> = {}) {
   const directory = mkdtempSync(join(tmpdir(), "void-ui-"));
   const filename = join(directory, "chat.sqlite");
@@ -32,7 +33,7 @@ function fixture(t: TestContext, handle: (request: ModelRequest) => { content?: 
   t.after(() => { checkpoints.close(); conversations.close(); components.close(); rmSync(filename, { force: true }); rmdirSync(directory); });
   const router = new ModelRouter([{ id: providerId, async generate(request) {
     requests.push(request);
-    const { content = "", toolCalls } = handle(request);
+    const { content = "", toolCalls } = await handle(request);
     return { model: request.model, content, ...(toolCalls ? { toolCalls } : {}), usage: { inputTokens: 2, outputTokens: 1 } };
   } }]);
   const defaults = { providerId, model: "main" };
@@ -199,4 +200,21 @@ test("when the model opens the workspace and something more, only the action tha
     : { toolCalls: [call("ui_openWindow", { component: "sessions" }, "call_1"), call("ui_switchMode", { mode: "workspace" }, "call_2")] },
   { shortcut: interfaceCommand });
   assert.deepEqual(await ask("abre o workspace"), [opened[0], { type: "final", text: "Workspace aberto." }]);
+});
+
+// In a live run a free route took 29 s to answer "abre o workspace". The host does not wait that long for it.
+test("a slow model does not hold a plain interface command: after a short wait the host opens it", { timeout: 5_000 }, async (t) => {
+  // AbortSignal.timeout does not keep the process alive by itself; a server or a terminal does. Here a timer stands in.
+  const alive = setTimeout(() => {}, 4_000);
+  t.after(() => clearTimeout(alive));
+  let abandoned = false;
+  const never =(request: ModelRequest) => new Promise<Scripted>((_, reject) => {
+    request.signal?.addEventListener("abort", () => { abandoned = true; reject(request.signal?.reason); });
+  });
+  const { ask, requests } = fixture(t, never, { shortcut: interfaceCommand, shortcutWaitMs: 40 });
+  const startedAt = performance.now();
+  assert.deepEqual(await ask("abre o workspace"), opened);
+  assert.ok(performance.now() - startedAt < 2_000);
+  assert.equal(requests.length, 1);
+  assert.equal(abandoned, true, "the model call was cancelled, not left running");
 });

@@ -88,6 +88,8 @@ export interface MainAgentOptions {
    * the host runs the operation itself. The call goes through the registry: only what this channel may run executes.
    */
   shortcut?: (message: string) => { name: string; arguments: unknown } | undefined;
+  /** How long the tools conversation may take on such a message before the host runs the operation. Default 5 s. */
+  shortcutWaitMs?: number;
   routesForEffort?: (effort: ExplicitEffort) => ModelRoutes;
   formatProgress?: (event: ProgressEvent, fallback: string) => string;
   onCommunicationIssue?: (kind: "subscriber" | "progress" | "synthesis" | "history" | "memory", executionId?: string) => void | Promise<void>;
@@ -110,6 +112,7 @@ const summaryTimeoutMs = 20_000;
 const summaryTokens = 400;
 const summaryTurns = 12;
 const summaryAttempts = 3;
+const shortcutWaitMs = 5_000;
 
 const summaryPrompt = [
   "VOID_SUMMARY. Resuma a conversa abaixo, entre o usuário e o VOID, para servir de memória em conversas futuras.",
@@ -423,7 +426,10 @@ export class MainAgent {
     const budget = callBudget(limits.calls);
     const actions: TurnAction[] = [];
     const planning: PlanningUsage = { elapsedMs: 0 };
-    const signal = AbortSignal.any([input.context.signal, AbortSignal.timeout(limits.pauseAfterMs ?? toolTurnTimeoutMs)]);
+    // A plain interface command does not wait long for the model: past this bound the turn is abandoned and the
+    // caller runs the command itself. A free route took 29 s in a live run just to open the workspace.
+    const signal = AbortSignal.any([input.context.signal, AbortSignal.timeout(c.plain
+      ? this.options.shortcutWaitMs ?? shortcutWaitMs : limits.pauseAfterMs ?? toolTurnTimeoutMs)]);
     const warning = input.stream ? setTimeout(() => emit({ type: "generation_warning",
       text: "A geração continua. Você pode interrompê-la pelo botão Parar." }), limits.warnAfterMs) : undefined;
     const turnContext = (): AgentContext => ({ ...input.context, executionId, sessionId: input.sessionId, signal,
