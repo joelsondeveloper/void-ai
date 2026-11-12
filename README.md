@@ -70,6 +70,10 @@ Run `npm run chat:void` to open the deterministic MOCK terminal. Type a supporte
 
 **Modo `tools` (experimental).** No modo LIVE (`npm run dev:web:live`), o VOID conversa em texto livre com tool calling nativo em vez do envelope JSON: os especialistas viram tools (`ask_dev`, `ask_research`), o modelo decide quando chamá-las e escreve a resposta final com a própria voz (persona `void-v2`). O coordenador JSON continua sendo o padrão no MOCK, volta com `VOID_CONVERSATION_MODE=decision` e serve de fallback quando o modelo não suporta tools. [Detalhes, limites e o que ficou de fora](docs/tool-calling-mode.md)
 
+**Memória entre sessões (modo `tools`).** O VOID guarda um perfil do usuário, fatos curtos que ele contou ou pediu para lembrar e resumos das sessões anteriores, e usa isso nas conversas seguintes sem que o usuário precise repetir. A cada turno que muda a memória aparece uma linha como "Memória: salvei …". Para ver e apagar: `/memory`, `/forget ID` e `/forget all` no terminal, ou `GET /api/memory`, `DELETE /api/memory/:id` e `DELETE /api/memory` na API local. [Como funciona](docs/tool-calling-mode.md#memória)
+
+**Privacidade da memória.** Os registros ficam em **texto em claro**, no mesmo arquivo SQLite da conversa (`void-chat*.sqlite` no terminal, `web/.data/*.sqlite` na web), **só neste computador**: nada é enviado a um serviço de memória externo. O que entra no prompt vai para o provedor do modelo junto com a conversa, como o histórico já ia. Texto que parece senha, chave de API, token, número de cartão, CPF, CNPJ ou chave privada é recusado antes de gravar. Apagar é definitivo: o registro sai da tabela e do índice de busca. Quem tem acesso ao arquivo tem acesso à memória, então guarde o banco em local privado.
+
 The default databases are `void-chat.sqlite` for MOCK and `void-chat-live.sqlite` for LIVE. Set `VOID_CHAT_DB` to a private path and `VOID_CHAT_SESSION` to select a session. The conversation turns use a separate SQLite table from execution checkpoints. Inputs and results are stored in plaintext. Each planning request uses four recent completed turns by default, with a 2,000-character cap per history message. After a restart, recover the execution ID with `/pending`. Prior progress messages are not replayed. Session IDs scope data in the trusted host; they are not an authentication mechanism.
 
 `VOID_EFFORT` accepts `auto`, `low`, `medium`, `high` or `max`. Set `VOID_CHAT_MAX_CALLS` to override the starting call budget. The planning call counts toward delegated work, and synthesis uses the remaining governed budget when available. The final answer always includes the confirmed results and outstanding failures or steps. Model-assisted synthesis accepts only excerpts verified against completed outputs. Direct dependency evidence is limited to 4,000 characters per dependency and 12,000 total and is treated as untrusted input.
@@ -154,10 +158,13 @@ No modo LIVE, as rotas do OpenRouter continuam restritas a modelos gratuitos ver
 | GET | `/api/sessions/:session/events` | Fluxo SSE de snapshots com IDs de evento |
 | GET | `/api/sessions/:session/executions/:id` | Estado e resultados de uma execução |
 | POST | `/api/sessions/:session/executions/:id/action` | Pausa, cancelamento, aprovação de extensão e retomada |
+| GET | `/api/memory` | Lista todos os registros da memória, do mais antigo ao mais novo |
+| DELETE | `/api/memory/:id` | Apaga um registro. 404 se não existir |
+| DELETE | `/api/memory` | Apaga toda a memória. Exige o corpo `{"confirm":"apagar-tudo"}` |
 
 A execução continua se a conexão SSE cair. Ao reconectar, o navegador substitui o estado local pelo snapshot atual, identificado por sessão. A API deduplica envios pelo ID da mensagem, rejeita ações de outra sessão e verifica a revisão do checkpoint antes de aceitar uma ação. As últimas 80 notificações por sessão são mantidas em memória enquanto o servidor estiver ativo. Depois de reiniciar o processo, a conversa e as etapas são reconstruídas do SQLite. A linha do tempo de um processo anterior pode perder notificações intermediárias, como o instante exato de uma retomada. A recuperação de chamadas em voo segue a política de interrupção do núcleo.
 
-O servidor escuta em loopback e valida Host, Origin e payloads. Esta interface é para um único usuário local. Exposição pública exige autenticação, autorização multiusuário e revisão de implantação. Mantenha o banco e as credenciais em local privado.
+O servidor escuta em loopback e valida Host, Origin e payloads. As rotas de memória seguem as mesmas regras: `DELETE` exige Origin local, e `GET /api/memory` recusa `Sec-Fetch-Site` de outro site. Esta interface é para um único usuário local. Exposição pública exige autenticação, autorização multiusuário e revisão de implantação. Mantenha o banco e as credenciais em local privado.
 
 ### Verificações
 
