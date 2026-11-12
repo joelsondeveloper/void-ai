@@ -27,7 +27,7 @@ function fixture(t: TestContext, handle: (request: ModelRequest) => { content?: 
   const checkpoints = new SQLiteCheckpointStore(filename);
   const conversations = new SQLiteConversationStore(filename);
   const components = new ComponentRegistry(filename);
-  t.after(() => { checkpoints.close(); conversations.close(); rmSync(filename, { force: true }); rmdirSync(directory); });
+  t.after(() => { checkpoints.close(); conversations.close(); components.close(); rmSync(filename, { force: true }); rmdirSync(directory); });
   const router = new ModelRouter([{ id: providerId, async generate(request) {
     requests.push(request);
     const { content = "", toolCalls } = handle(request);

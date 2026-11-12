@@ -1,22 +1,19 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { MemoryError, memoryLimits, normalizeMemoryText, searchStem, searchTerms, SQLiteMemoryStore } from "../src/conversation/MemoryStore.js";
+import { hasFts5, tempDirectory, withoutFts5 } from "./support/sqliteTemp.js";
 
-function file(t: TestContext): string {
-  const directory = mkdtempSync(join(tmpdir(), "void-memory-"));
-  t.after(() => rmSync(directory, { recursive: true, force: true }));
-  return join(directory, "memory.sqlite");
-}
+const file = () => join(tempDirectory("void-memory-"), "memory.sqlite");
+/** The FTS5 variants only run where SQLite has FTS5; the fallback variants run everywhere. */
+const only = (mode: "fts5" | "fallback") => ({ skip: mode === "fts5" && withoutFts5 });
 
 function clock() {
   let at = Date.parse("2026-11-11T12:00:00.000Z");
   return () => new Date(at += 1_000);
 }
 
-function open(t: TestContext, search: "fts5" | "fallback", filename = file(t)) {
+function open(t: TestContext, search: "fts5" | "fallback", filename = file()) {
   const store = new SQLiteMemoryStore(filename, { search, now: clock() });
   t.after(() => { try { store.close(); } catch { /* already closed */ } });
   return store;
@@ -25,14 +22,18 @@ function open(t: TestContext, search: "fts5" | "fallback", filename = file(t)) {
 const rejects = (action: () => unknown, code: MemoryError["code"]) =>
   assert.throws(action, (error) => error instanceof MemoryError && error.code === code);
 
-test("the runtime check picks FTS5 when this Node's SQLite has it", (t) => {
-  const store = new SQLiteMemoryStore(file(t));
+test("the runtime check picks FTS5 when this Node's SQLite has it, and the fallback otherwise", (t) => {
+  const store = new SQLiteMemoryStore(file());
   t.after(() => store.close());
-  assert.ok(["fts5", "fallback"].includes(store.searchMode));
+  assert.equal(store.searchMode, hasFts5 ? "fts5" : "fallback");
+});
+
+test("asking for FTS5 where SQLite lacks it fails on open instead of silently searching another way", { skip: hasFts5 && "este SQLite tem FTS5" }, () => {
+  assert.throws(() => new SQLiteMemoryStore(file(), { search: "fts5" }), /não tem FTS5/);
 });
 
 for (const mode of ["fts5", "fallback"] as const) {
-  test(`[${mode}] creates, reads and lists records oldest first`, (t) => {
+  test(`[${mode}] creates, reads and lists records oldest first`, only(mode), (t) => {
     const store = open(t, mode);
     assert.equal(store.searchMode, mode);
     const { record, created, removed } = store.add({ kind: "profile", text: "  Se chama   Joelson ", sessionId: "s1", sourceTurnId: "turn-1" });
@@ -51,7 +52,7 @@ for (const mode of ["fts5", "fallback"] as const) {
     assert.equal(store.count(), 2);
   });
 
-  test(`[${mode}] search ranks by shared words, ignores accents and case, and leaves unrelated records out`, (t) => {
+  test(`[${mode}] search ranks by shared words, ignores accents and case, and leaves unrelated records out`, only(mode), (t) => {
     const store = open(t, mode);
     store.add({ kind: "fact", text: "Mora em Recife" });
     store.add({ kind: "fact", text: "Gosta de café coado" });
@@ -71,7 +72,7 @@ for (const mode of ["fts5", "fallback"] as const) {
     assert.deepEqual(store.search('" OR * NEAR( ) recife^'), store.search("recife"));
   });
 
-  test(`[${mode}] dedupes by normalized text and touches the existing record`, (t) => {
+  test(`[${mode}] dedupes by normalized text and touches the existing record`, only(mode), (t) => {
     const store = open(t, mode);
     const first = store.add({ kind: "fact", text: "Gosta de café coado." }).record;
     const again = store.add({ kind: "fact", text: "gosta  de CAFÉ, coado!!" });
@@ -86,7 +87,7 @@ for (const mode of ["fts5", "fallback"] as const) {
     assert.equal(normalizeMemoryText(" Olá,   Mundo! "), "olá mundo");
   });
 
-  test(`[${mode}] rejects invalid input, oversized text and a full store, and never deletes to make room`, (t) => {
+  test(`[${mode}] rejects invalid input, oversized text and a full store, and never deletes to make room`, only(mode), (t) => {
     const store = open(t, mode);
     rejects(() => store.add({ kind: "fact", text: "   ...  " }), "invalid");
     rejects(() => store.add({ kind: "other" as "fact", text: "x" }), "invalid");
@@ -106,7 +107,7 @@ for (const mode of ["fts5", "fallback"] as const) {
     assert.equal(store.count(), memoryLimits.records);
   });
 
-  test(`[${mode}] summaries rotate, keeping the three most recent and reporting what was removed`, (t) => {
+  test(`[${mode}] summaries rotate, keeping the three most recent and reporting what was removed`, only(mode), (t) => {
     const store = open(t, mode);
     const ids = [1, 2, 3].map((n) => store.add({ kind: "summary", text: `Resumo ${n}` }).record.id);
     const fourth = store.add({ kind: "summary", text: "Resumo 4" });
@@ -115,7 +116,7 @@ for (const mode of ["fts5", "fallback"] as const) {
     assert.deepEqual(store.search("resumo", { limit: 10 }).length, 3);
   });
 
-  test(`[${mode}] delete and clear remove rows for real, including from search`, (t) => {
+  test(`[${mode}] delete and clear remove rows for real, including from search`, only(mode), (t) => {
     const store = open(t, mode);
     const keep = store.add({ kind: "fact", text: "Mora em Recife" }).record;
     const drop = store.add({ kind: "fact", text: "Mora em Olinda" }).record;
@@ -131,7 +132,7 @@ for (const mode of ["fts5", "fallback"] as const) {
     assert.deepEqual(store.search("mora"), []);
   });
 
-  test(`[${mode}] update replaces the text in place, re-indexes it and validates like add`, (t) => {
+  test(`[${mode}] update replaces the text in place, re-indexes it and validates like add`, only(mode), (t) => {
     const store = open(t, mode);
     const record = store.add({ kind: "fact", text: "Mora em Recife", sessionId: "s1" }).record;
     const other = store.add({ kind: "fact", text: "Gosta de café" }).record;
@@ -154,8 +155,8 @@ for (const mode of ["fts5", "fallback"] as const) {
     assert.equal(store.update(record.id, "MORA EM OLINDA").text, "MORA EM OLINDA");
   });
 
-  test(`[${mode}] records and summary marks survive reopening the file`, (t) => {
-    const filename = file(t);
+  test(`[${mode}] records and summary marks survive reopening the file`, only(mode), (t) => {
+    const filename = file();
     const first = open(t, mode, filename);
     const record = first.add({ kind: "fact", text: "Usa Biome no lugar do ESLint" }).record;
     first.markSummarized("old-session", 4);
@@ -169,7 +170,7 @@ for (const mode of ["fts5", "fallback"] as const) {
     assert.equal(second.summarizedTurns("old-session"), 6);
   });
 
-  test(`[${mode}] secrets are rejected before anything is written`, (t) => {
+  test(`[${mode}] secrets are rejected before anything is written`, only(mode), (t) => {
     const store = open(t, mode);
     const key = "sk-or-v1-" + "a1b2c3d4".repeat(6);
     assert.throws(() => store.add({ kind: "fact", text: "Minha chave é " + key }), (error) =>
@@ -178,8 +179,8 @@ for (const mode of ["fts5", "fallback"] as const) {
   });
 }
 
-test("the FTS5 index is rebuilt on open, so writes made in fallback mode are searchable", (t) => {
-  const filename = file(t);
+test("the FTS5 index is rebuilt on open, so writes made in fallback mode are searchable", { skip: withoutFts5 }, (t) => {
+  const filename = file();
   const fallback = open(t, "fallback", filename);
   // Create the FTS table first so the fallback writes leave it stale.
   open(t, "fts5", filename).close();
@@ -190,7 +191,7 @@ test("the FTS5 index is rebuilt on open, so writes made in fallback mode are sea
 });
 
 test("the memory tables live in the same SQLite file as the conversation and are STRICT", async (t) => {
-  const filename = file(t);
+  const filename = file();
   const { SQLiteConversationStore } = await import("../src/conversation/ConversationStore.js");
   const conversations = new SQLiteConversationStore(filename);
   const store = open(t, "fallback", filename);
@@ -210,7 +211,7 @@ test("the memory tables live in the same SQLite file as the conversation and are
 });
 
 for (const mode of ["fts5", "fallback"] as const) {
-  test(`[${mode}] Portuguese search: stopwords out, accents folded, "trabalho" meets "trabalha"`, (t) => {
+  test(`[${mode}] Portuguese search: stopwords out, accents folded, "trabalho" meets "trabalha"`, only(mode), (t) => {
     const store = open(t, mode);
     const job = store.add({ kind: "fact", text: "O usuário trabalha na Florarte." }).record;
     store.add({ kind: "fact", text: "Gosta de café coado" });

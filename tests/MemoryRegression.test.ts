@@ -17,6 +17,7 @@ import { ModelRouter } from "../src/models/ModelRouter.js";
 import { AgentRegistry } from "../src/runtime/AgentRegistry.js";
 import { AgentRuntime } from "../src/runtime/AgentRuntime.js";
 import type { ModelRequest } from "../src/types/model.js";
+import { anySearchMode, withoutFts5 } from "./support/sqliteTemp.js";
 
 const fact = "O usuário trabalha na Florarte.";
 const block = (prompt: string) => /<memoria_do_usuario>\n[\s\S]*?<\/memoria_do_usuario>/.exec(prompt.slice(prompt.lastIndexOf("<memoria_do_usuario>\n")))?.[0] ?? "";
@@ -58,7 +59,7 @@ function freshAgent(t: TestContext, mode: ConversationMode, search: "fts5" | "fa
 
 for (const mode of ["tools", "decision"] as const) {
   for (const search of ["fts5", "fallback"] as const) {
-    test(`[${mode}/${search}] a new session gets the saved fact even when the question shares no word with it`, async (t) => {
+    test(`[${mode}/${search}] a new session gets the saved fact even when the question shares no word with it`, { skip: search === "fts5" && withoutFts5 }, async (t) => {
       const { ask } = freshAgent(t, mode, search);
       for (const message of ["me diga onde eu trabalho", "Você sabe alguma coisa sobre a Florarte?", "bom dia"]) {
         const memory = block(await ask(message));
@@ -77,7 +78,7 @@ test("VOID_DEBUG_MEMORY=1 logs counts, ids and block size per turn, never the st
   const lines: string[] = [];
   t.mock.method(console, "error", (...args: unknown[]) => { lines.push(args.map(String).join(" ")); });
   delete process.env.VOID_DEBUG_MEMORY;
-  const quiet = freshAgent(t, "tools", "fts5");
+  const quiet = freshAgent(t, "tools", anySearchMode);
   await quiet.ask("me diga onde eu trabalho");
   assert.equal(lines.filter((line) => line.startsWith("VOID [memory]")).length, 0, "silent by default");
 
@@ -116,7 +117,7 @@ test("relevance orders the facts but never excludes them; the most recent unrela
 });
 
 test("tools prompt: recall before denying, proactive remember with few-shot examples, safety rule kept", async (t) => {
-  const prompt = await freshAgent(t, "tools", "fts5").ask("oi");
+  const prompt = await freshAgent(t, "tools", anySearchMode).ask("oi");
   assert.match(prompt, /Antes de dizer que não sabe algo sobre o usuário \(trabalho, gostos, família, projetos, preferências\), confira o bloco e chame recall\./);
   assert.match(prompt, /Nunca diga que não há nada na memória sem ter chamado recall nesta resposta/);
   assert.match(prompt, /chame remember sem pedir permissão e confirme em meia frase \("Anotei\."\)/);
