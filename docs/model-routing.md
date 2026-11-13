@@ -9,7 +9,7 @@ The experimental terminal labels every reply as MOCK or LIVE. MOCK is determinis
 | low | Nemotron 3 Ultra · reasoning off | Nemotron 3.5 Super VL · reasoning off | Super VL · reasoning off | North Mini Code | Ultra · none |
 | medium / high / max | Nemotron 3 Ultra · reasoning off | Nemotron 3.5 Super VL · reasoning off | Super VL · reasoning off | North Mini Code | Ultra · none |
 
-The LIVE web server and terminal talk in the tools mode by default, so the conversation route is the model the user actually talks to. It was chosen by measurement, see [Medição do modo tools](#medição-do-modo-tools). `VOID_MAIN_MODEL` overrides both Main columns. Ultra does not accept `response_format`, which is why the JSON coordinator keeps Super VL.
+The LIVE web server and terminal talk in the tools mode by default, so the conversation route is the model the user actually talks to. It was chosen by measurement: first in [Medição do modo tools](#medição-do-modo-tools) and confirmed by the wider 21-scenario evaluation in [orchestrator-model-eval.md](orchestrator-model-eval.md). `VOID_MAIN_MODEL` overrides both Main columns. Ultra does not accept `response_format`, which is why the JSON coordinator keeps Super VL. The memory agent (route `memory`, `VOID_MEMORY_MODEL`) also defaults to Ultra with reasoning off. Fallbacks, in order: Particle 1, Super VL, Dots.
 
 Auto resolves to low. Super VL and Dots advertise JSON support and accept disabling reasoning. New LIVE routes omit the optional output cap by default so the serving endpoint applies its limits. The adapter checks context using a conservative text size estimate and clamps explicit output caps using catalog metadata. Call, step, concurrency, and explicit budget checks remain active.
 

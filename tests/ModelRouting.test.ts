@@ -15,7 +15,7 @@ import { SQLiteCheckpointStore } from "../src/governance/CheckpointStore.js";
 import { ExecutionGovernance } from "../src/governance/ExecutionGovernance.js";
 import { resolveEffort } from "../src/governance/effort.js";
 import { ModelRouter } from "../src/models/ModelRouter.js";
-import { freeModelIds, liveModelRoutes, selectOpenRouterRoutes } from "../src/models/modelSelection.js";
+import { freeFallbackModels, freeModelIds, liveModelRoutes, selectOpenRouterRoutes } from "../src/models/modelSelection.js";
 import { freeOnlyAuthorization } from "../src/models/costAuthorization.js";
 import { OpenRouterFreeCatalog } from "../src/models/providers/OpenRouterFreeCatalog.js";
 import { OpenRouterProvider } from "../src/models/providers/OpenRouterProvider.js";
@@ -348,4 +348,14 @@ test("free catalog requires explicitly optional reasoning before disabling it", 
     if (mandatory === false) await check;
     else await assert.rejects(check, /não confirmou o controle/);
   }
+});
+
+test("the fallback order follows the orchestrator evaluation and holds only free models", () => {
+  // docs/orchestrator-model-eval.md: Ultra first (the conversation default), Particle second, Super VL third.
+  assert.deepEqual([...freeFallbackModels], [freeModelIds.particle, freeModelIds.superVl, freeModelIds.dots]);
+  assert.ok(freeFallbackModels.every((model) => model.endsWith(":free")));
+  assert.equal(liveModelRoutes("low", {}).conversation?.model, freeModelIds.ultra);
+  assert.deepEqual(liveModelRoutes("low", {}).memory, { providerId: "openrouter", model: freeModelIds.ultra, reasoning: { enabled: false } });
+  assert.equal(liveModelRoutes("low", { VOID_MEMORY_MODEL: freeModelIds.north }).memory?.model, freeModelIds.north);
+  assert.throws(() => liveModelRoutes("low", { VOID_MEMORY_MODEL: "vendor/paid" }), /modelo :free/);
 });

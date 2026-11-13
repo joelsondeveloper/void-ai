@@ -10,9 +10,16 @@ export const freeModelIds = {
   dots: "dots-studio/dots-3-note-preview:free",
   ultra: "nvidia/nemotron-3-ultra-550b-a55b:free",
   north: "cohere/north-mini-code:free",
+  particle: "particle-ai/particle-1:free",
 } as const;
 
-export const freeFallbackModels = [freeModelIds.superVl, freeModelIds.dots, freeModelIds.gemma] as const;
+/**
+ * Tried in order when a route's own model fails before answering (catalog, reasoning or tools check, transport,
+ * 404, 5xx). The order follows docs/orchestrator-model-eval.md: second and third place after the conversation
+ * default, then Dots, which accepts response_format, for the JSON coordinator. Each one passes the same free-price,
+ * tools and format checks as a primary route, and a route never falls back to itself.
+ */
+export const freeFallbackModels = [freeModelIds.particle, freeModelIds.superVl, freeModelIds.dots] as const;
 
 type AgentRouteDefinition = { id: string; model?: { configKey: string; fallback: string } };
 
@@ -84,10 +91,10 @@ export function selectOpenRouterRoutes(effort: ExplicitEffort, env: NodeJS.Proce
   const decision = route("MAIN", freeModelIds.superVl);
   return {
     decision,
-    // The tool-calling conversation has its own default, chosen by measurement (docs/model-routing.md, "Medição do
-    // modo tools"): Ultra was the only free model to pass every scenario of `npm run benchmark:tools:live` in three
-    // rounds. It stays out of `decision` because it does not accept response_format and failed the JSON coordinator.
-    // VOID_MAIN_MODEL overrides both.
+    // The tool-calling conversation has its own default, chosen by measurement (docs/orchestrator-model-eval.md):
+    // Ultra had the best weighted score of `npm run eval:orchestrator` over 14 free models. It stays out of
+    // `decision` because it does not accept response_format and failed the JSON coordinator. VOID_MAIN_MODEL
+    // overrides both.
     conversation: route("MAIN", freeModelIds.ultra),
     // The memory agent's short call after each turn. VOID_MEMORY_MODEL overrides it; by default it follows the
     // conversation model that measured best.

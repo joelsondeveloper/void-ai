@@ -166,37 +166,36 @@ No modo MOCK, só as frases exatas de `src/web/demo-provider.ts:6` funcionam ("m
 
 ## Depois da auditoria
 
-O texto acima descreve o estado no commit `08c1ac6` e fica como estava. Esta seção registra o que mudou em seguida na `feat/v2-integration`.
+O texto acima descreve o estado no commit `08c1ac6` e fica como estava. Esta seção registra o estado final da `feat/v2-integration`, depois da especificação completa (fases 2 a 5).
 
 | # | Achado | O que foi feito | Onde |
 | --- | --- | --- | --- |
-| 1 | Resumo falhava em toda sessão nova | A chamada leva `route.reasoning`. No máximo três tentativas por sessão anterior em cada execução. `VOID_DEBUG_MEMORY=1` registra a categoria da falha. Confirmado ao vivo: o resumo passou a ser gravado. | `MainAgent.summarizePrevious` |
-| 2 | Workspace dependia só do modelo | Uma mensagem que é só um comando de interface sempre produz a ação daquele comando, nos dois modos. O modelo é consultado primeiro; se demorar mais de 5 s, falhar, responder em texto ou abrir outra coisa, o host executa. Botão "Abrir workspace" no overlay do Focus. | `src/web/ui-intents.ts`, `MainAgent`, `console.tsx` |
-| 3 | Gravação dependia de `remember` | Captura do host no fim de todo turno, sem chamada de modelo. | `src/conversation/memoryExtractor.ts`, `MainAgent.settleMemory` |
-| 4 | Aviso de memória invisível na web | O aviso fica embaixo da resposta do turno. | `console.tsx` |
-| 5 | "Anotei." sem gravação | Causa encontrada na medição: os exemplos do prompt mostravam a chamada dentro da fala (`VOID: [remember "x"] Anotei.`) e o modelo copiava a notação como texto. Exemplos reescritos, eco removido da resposta e da prévia, e o aviso "Memória: nada foi salvo nesta resposta." quando a afirmação é falsa. | `persona.ts`, `MainAgent` |
-| 6 | Falhas de memória silenciosas na web | O runtime web registra as falhas internas no console. | `src/web/runtime.ts` |
-| 7 | Sem FTS5 nesta máquina | Sem mudança de código. Os testes do caminho FTS5 são pulados com motivo; esse caminho continua sem verificação aqui. | `tests/support/sqliteTemp.ts` |
-| 9 | Modo JSON não gravava | A captura do host roda nos dois modos. As tools de memória continuam só no modo tools. | `MainAgent.settleMemory` |
+| 1 | Resumo falhava em toda sessão nova | A chamada leva `route.reasoning`. No máximo três tentativas por sessão anterior em cada execução. Os dois modos resumem. Confirmado ao vivo: o resumo passou a ser gravado. | `MainAgent.summarizePrevious` |
+| 2 | Workspace dependia só do modelo | Comandos curtos e imperativos de interface rodam no host **antes** do modelo, sem chamá-lo, pelo registro. Controle "Abrir workspace" na própria tela Focus. | `src/web/ui-intents.ts`, `MainAgent.runShortcut`, `console.tsx` |
+| 3 | Gravação dependia de `remember` | Agente de memória: uma chamada curta e separada depois da resposta, que propõe operações. As regras fixas rodam sempre depois dele. Tools, agente e regras gravam pelo mesmo caminho. | `memoryAgent.ts`, `memoryExtractor.ts`, `voidTools.ts` (`MemoryStage`) |
+| 4 | Aviso de memória invisível na web | O aviso fica embaixo da resposta do turno. Painel "Memória" para ver e apagar. | `console.tsx`, `memory-panel.tsx` |
+| 5 | "Anotei." sem gravação | Causa: os exemplos do prompt mostravam a chamada dentro da fala e o modelo copiava a notação. Exemplos reescritos, eco removido. Trava de honestidade: roda o agente na hora e, se nada foi gravado, troca a frase por "Não consegui gravar isso na memória.". O mesmo para ações de interface. | `persona.ts`, `honesty.ts`, `MainAgent.closeTurn` |
+| 6 | Falhas de memória silenciosas na web | O runtime web registra as falhas internas no console. `VOID_DEBUG_MEMORY=1` mostra também as gravações e as correções de honestidade, sem texto. | `src/web/runtime.ts`, `MainAgent.diagnose` |
+| 7 | Sem FTS5 nesta máquina | Sem mudança de código. Os testes do caminho FTS5 são pulados com motivo. | `tests/support/sqliteTemp.ts` |
+| 9 | Modo JSON não gravava | O agente de memória e as regras rodam nos dois modos. Num plano delegado, só uma execução concluída grava. | `MainAgent.closeTurn`, `rememberDelegated` |
 
 Também mudou:
 
-- **Registros.** Ganharam `origin` (`explicit`, `extracted`, `summary`) e `topic` opcional, com um registro por tema. Bancos existentes são migrados ao abrir. A migração foi conferida numa cópia do banco real.
-- **Modelo da conversa.** Rota nova `conversation`, com o Nemotron 3 Ultra, escolhido por medição. O coordenador JSON e a síntese ficaram no Super VL. Detalhes e limites da medição em `docs/model-routing.md`, seção "Medição do modo tools".
+- **Bloco de memória.** Logo depois da persona, antes das regras; no fim do prompt o modelo o ignorava. O enquadramento diz que a memória prevalece sobre mensagens anteriores que disseram não saber.
+- **Registros.** Ganharam `origin` (`explicit`, `extracted`, `summary`) e `topic` opcional, com um registro por tema. Bancos existentes migram ao abrir; conferido numa cópia do banco real.
+- **Limite de 500.** O resumo mais antigo dá lugar a um fato novo; perfil e fatos nunca saem sozinhos.
+- **Modelo.** Conversa e agente de memória no Nemotron 3 Ultra; fallbacks Particle 1, Super VL e Dots; coordenador JSON e síntese no Super VL. Ver `docs/orchestrator-model-eval.md`.
+- **Próximo turno espera a gravação.** Um turno da mesma sessão aguarda a captura pendente do anterior antes de chamar o modelo.
 
-### Decisões tomadas sem especificação
+### Escolhas feitas por mim
 
-O pedido desta rodada chegou cortado no meio da seção 2.2, antes de descrever a segunda via de captura, a frente do workspace e a do modelo. Estas escolhas foram minhas e podem ser revistas:
-
-- **Extrator determinístico, não uma chamada de modelo.** Não gasta cota, não falha por limite de requisições e é testável. O custo é a cobertura: só um conjunto fechado de formas de frase. Um extrator por modelo pode ser acrescentado depois, usando o mesmo ponto de entrada.
-- **Sem os tipos projeto, pessoa e preferência.** O código só tinha `profile`, `fact` e `summary`, e o pedido mandava manter os existentes. Projetos, pessoas e preferências entram como `fact` com tema próprio (`projeto:…`, `pessoa:…`, `prefere:…`).
-- **Modelo primeiro nos comandos de interface.** `tests/IntegrationAudit.test.ts` fixa que frases conhecidas também passam pelo modelo, então o host é rede de segurança, não atalho. Executar direto, sem modelo, seria instantâneo e não gastaria cota, mas contraria esse teste; é uma decisão de produto.
-- **A tela inicial continua sendo o anel.** O teste de navegador exige o Focus sem barra nem menu, e a documentação diz que recarregar volta ao Focus. O que mudou foi haver um caminho garantido para sair dele.
+- **Regras fixas além do agente.** A especificação pede o agente de memória e "pular sem erro" quando ele não pode rodar. Mantive também as regras fixas, rodando depois dele, porque a medição mostrou modelos gratuitos devolvendo `[]` para uma mudança de cidade. As duas vias passam pelo mesmo `MemoryStage`, então isso não duplica lógica.
+- **Turnos de comando de interface ficam fora do chat.** A especificação pede registrá-los "como qualquer turno". Eles são gravados no histórico, mas com a marca de interface que os turnos de interface do modelo já tinham. Como turnos comuns, eles renomeavam a sessão para "abre o workspace" e quebravam quatro testes de navegador.
+- **Rota própria para a conversa.** A especificação pede o vencedor como padrão do MainAgent. Ele virou padrão da conversa (o modo usado em LIVE), não do coordenador JSON, porque não aceita `response_format` e falhou no benchmark do coordenador.
 
 ### O que continua em aberto
 
-- Sem painel de memória na interface web. A API já existe.
 - O caminho FTS5 não pôde ser exercitado nesta máquina.
-- A âncora das tools de memória compara palavras, não sentido.
-- No modo JSON, um comando de interface espera o modelo o tempo normal do turno; a espera curta de 5 s só vale no modo tools.
-- Uma transcrição de voz que o modelo não dispense como ruído passa pela captura como qualquer mensagem.
+- Quase nenhum modelo delega revisão de código a `ask_dev`, e só um respondeu `<ignore/>` a ruído de voz. É ajuste de prompt, não medido nesta rodada.
+- A âncora compara palavras, não sentido. A trava de honestidade reconhece formas comuns de afirmar uma gravação ou ação de tela; uma forma que ela não conhece passa.
+- O agente de memória com um modelo de raciocínio obrigatório falha sempre (teto de 300 tokens); se `VOID_MEMORY_MODEL` apontar para um deles, só as regras fixas gravam.

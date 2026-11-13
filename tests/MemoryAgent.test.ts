@@ -260,3 +260,15 @@ test("when the agent keeps nothing, what the fixed rules know is still saved, on
   assert.deepEqual(stored(memory).map(([, , text]) => text), ["O usuário mora em Olinda.", "O usuário trabalha na Florarte."]);
   assert.equal(memory.byTopic("trabalho")?.text, "O usuário trabalha na Florarte.");
 });
+
+test("the honesty lock leaves recalls, asides and negations alone", () => {
+  // Measured with real models: replies read from the memory were flagged as if they claimed a save.
+  for (const reply of ["Agora lembrei: você trabalha na Florarte.", "Lembro que você mora em Recife.", "Esqueci de dizer: amanhã é feriado.",
+    "Não anotei nada, porque senhas não ficam na memória.", "Não vou guardar esse tipo de dado.", "Nunca guardei senhas.",
+    "Não abri o painel, me diz qual você quer."]) {
+    assert.equal(claimsMemoryChange(reply) || claimsInterfaceChange(reply), false, reply);
+  }
+  for (const reply of ["Pronto, lembrei.", "Esqueci, como você pediu.", "Anotei.", "Ok, lembrei disso.", "Abri o painel de uso."]) {
+    assert.equal(claimsMemoryChange(reply) || claimsInterfaceChange(reply), true, reply);
+  }
+});
