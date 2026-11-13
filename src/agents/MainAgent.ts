@@ -5,7 +5,7 @@ import { claimsInterfaceChange, claimsMemoryChange, honestReply, honesty } from 
 import { memoryAgentInput, memoryAgentPrompt, parseMemoryOps, stageMemoryOps, type MemoryOp } from "../conversation/memoryAgent.js";
 import { asksToRemember, extractMemories, stageExtracted } from "../conversation/memoryExtractor.js";
 import { detectSecret } from "../conversation/secrets.js";
-import { memoryLimits, type MemoryStore } from "../conversation/MemoryStore.js";
+import { memoryLimits, searchTerms, type MemoryStore } from "../conversation/MemoryStore.js";
 import { chatSystemPrompt, decisionMemoryPrompt, ignoreSentinel, memoryBlockFor, resolvePersona, withoutToolEcho,
   type MemoryBlock } from "../conversation/persona.js";
 import { parseSynthesis, renderResults } from "../conversation/synthesis.js";
@@ -466,7 +466,7 @@ export class MainAgent {
     const { memory } = this.options;
     // remember only accepts what the user said, so it is grounded in the user's own messages of this conversation.
     const memoryTurn = memory ? memoryTools({ store: memory, sessionId: input.sessionId,
-      ...(input.turnId ? { turnId: input.turnId } : {}),
+      ...(input.turnId ? { turnId: input.turnId } : {}), message,
       userText: [message, ...history.flatMap(({ role, content }) => role === "user" ? [content] : [])] }) : undefined;
     // The first turn of a session may first summarize the previous one, so this turn already remembers it.
     const summaryOutput = memory && history.length === 0 ? await this.summarizePrevious({ sessionId: input.sessionId, memory,
@@ -1001,7 +1001,8 @@ export class MainAgent {
   }
 
   private memoryTurn(scope: MemoryScope, memory: MemoryStore): MemoryTurn {
-    return memoryTools({ store: memory, sessionId: scope.sessionId, ...(scope.turnId ? { turnId: scope.turnId } : {}), userText: this.userText(scope) });
+    return memoryTools({ store: memory, sessionId: scope.sessionId, ...(scope.turnId ? { turnId: scope.turnId } : {}), message: scope.message,
+      userText: this.userText(scope) });
   }
 
   /** Capture by the fixed rules: no model call. Also what remains when the memory agent cannot run. */
@@ -1029,7 +1030,8 @@ export class MainAgent {
       const recent = memory.list().filter(({ id, kind }) => kind !== "summary" && !seen.has(id))
         .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
       const payload = memoryAgentInput({ userMessages: this.userText(scope), records: [...ranked, ...recent].slice(0, memoryAgentRecords),
-        written: [...written.added, ...written.updated].map(({ text }) => text) });
+        written: [...[...written.added, ...written.updated].map(({ text }) => text),
+          ...(written.deleted.length ? [`${written.deleted.length} registro(s) apagado(s) a pedido do usuário`] : [])] });
       const maxOutputTokens = outputLimit(Math.min(memoryAgentTokens, scope.route.maxOutputTokens ?? memoryAgentTokens), scope.limits.outputTokens);
       const ask = (extra: ModelMessage[]) => withGenerationTrace({ ...scope.trace, role: "memory" }, () =>
         this.governance.planRequest(this.router, scope.route.providerId, {
@@ -1047,7 +1049,12 @@ export class MainAgent {
         ops = parseMemoryOps((await ask([{ role: "assistant", content: first.slice(0, 600) },
           { role: "user", content: "Isso não é JSON válido. Responda só com a lista JSON de operações, ou []." }])).response.content);
       }
-      refused = stageMemoryOps(ops, turn, scope.message);
+      // What the request could be about: the search hits, plus records sharing a three-letter root with it, since
+      // short verbs change past the search stem ("moro" and "mora").
+      const roots = new Set(searchTerms(scope.message).filter((term) => term.length >= 4).map((term) => term.slice(0, 3)));
+      const related = new Set([...seen, ...recent.filter(({ text }) =>
+        searchTerms(text).some((term) => term.length >= 4 && roots.has(term.slice(0, 3)))).map(({ id }) => id)]);
+      refused = stageMemoryOps(ops, turn, scope.message, related, written.deleted.length);
     } catch (error) {
       const { category, code } = describeFailure(error);
       outcome = "fallback:" + (error instanceof ExecutionError ? category + (code ? ":" + code : "") : "invalid_json");

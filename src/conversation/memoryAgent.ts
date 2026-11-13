@@ -78,14 +78,20 @@ export function parseMemoryOps(content: string): MemoryOp[] {
  * forget needs the user to have asked for one, and whatever the stage refuses (not what the user said, a secret,
  * an unknown id) is counted and dropped. Returns how many operations were refused.
  */
-export function stageMemoryOps(ops: readonly MemoryOp[], turn: MemoryTurn, message: string): number {
+export function stageMemoryOps(ops: readonly MemoryOp[], turn: MemoryTurn, message: string,
+  /** Records the user's request could be about (a search with the request's own words). A forget must target one. */
+  related: ReadonlySet<string>, alreadyForgotten: number): number {
   const origin = asksToRemember(message) ? "explicit" : "extracted";
   let refused = 0;
   for (const item of ops.slice(0, maxMemoryOps)) {
     try {
       if (item.op === "add" && item.text) turn.stage.add({ text: item.text, kind: item.kind ?? "fact", origin, onSimilar: "update" });
       else if (item.op === "update" && item.text && item.targetId) turn.stage.update(item.targetId, item.text);
-      else if (item.op === "forget" && item.targetId && asksToForget(message)) turn.stage.forget(item.targetId);
+      // A forget needs the user to have asked, a target the request is about, and nothing forgotten yet in the turn.
+      // Measured: after the conversation model had already deleted the record asked for, the agent deleted another.
+      else if (item.op === "forget" && item.targetId && asksToForget(message) && alreadyForgotten === 0 && related.has(item.targetId)) {
+        turn.stage.forget(item.targetId);
+      }
       else refused++;
     } catch (error) {
       if (!(error instanceof Error && error.name === "ToolInputError")) throw error;

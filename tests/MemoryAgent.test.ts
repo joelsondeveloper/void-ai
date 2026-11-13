@@ -272,3 +272,33 @@ test("the honesty lock leaves recalls, asides and negations alone", () => {
     assert.equal(claimsMemoryChange(reply) || claimsInterfaceChange(reply), true, reply);
   }
 });
+
+test("the agent cannot forget a record the request is not about, or a second one after the model already did", async (t) => {
+  // Measured live: "esquece onde eu moro" — the model deleted the home record, then the agent deleted the work one.
+  let target = "";
+  const { ask, main, memory } = setup(t, () => "Pronto.", () => ops({ op: "forget", targetId: target }));
+  memory.add({ kind: "profile", text: "O usuário trabalha na Acme." });
+  memory.add({ kind: "profile", text: "O usuário mora em Olinda." });
+  const [work, home] = memory.list();
+  target = work!.id;
+  await ask("esquece onde eu moro");
+  await main.settled();
+  assert.ok(memory.get(work!.id), "the request was about the home, not the work");
+  target = home!.id;
+  await ask("esquece que eu moro em Olinda");
+  await main.settled();
+  assert.equal(memory.get(home!.id), undefined);
+});
+
+test("remember called by the model for a passing mention is recorded as extracted, a request to remember as explicit", async (t) => {
+  const reply = (text: string) => (request: ModelRequest): Reply => request.messages.some(({ role }) => role === "tool") ? "Ok."
+    : { toolCalls: [{ id: "c1", name: "remember", arguments: JSON.stringify({ text, kind: "profile" }) }] };
+  const passing = setup(t, reply("Mora em Olinda"), () => "[]");
+  await passing.ask("ah, eu moro em Olinda");
+  await passing.main.settled();
+  assert.deepEqual(stored(passing.memory), [["profile", "extracted", "Mora em Olinda"]]);
+  const asked = setup(t, reply("Prefere respostas curtas"), () => "[]");
+  await asked.ask("lembra que eu prefiro respostas curtas");
+  await asked.main.settled();
+  assert.deepEqual(stored(asked.memory)[0], ["profile", "explicit", "Prefere respostas curtas"]);
+});

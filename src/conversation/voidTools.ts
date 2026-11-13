@@ -5,7 +5,7 @@ import type { AgentContext } from "../types/context.js";
 import { ExecutionError, type ExecutionFailure } from "../types/failure.js";
 import type { AgentResult, AgentTask } from "../types/task.js";
 import { isRecord } from "./mainDecision.js";
-import { covers, exclusiveTopic, overlap } from "./memoryExtractor.js";
+import { asksToRemember, covers, exclusiveTopic, overlap } from "./memoryExtractor.js";
 import { isMemoryId, MemoryError, memoryLimits, normalizeMemoryText, searchTerms, type MemoryKind, type MemoryOrigin,
   type MemoryRecord, type MemoryStore } from "./MemoryStore.js";
 import { isUiAction, type UiAction } from "../web/ui-contracts.js";
@@ -208,6 +208,8 @@ export function memoryTools(input: {
   turnId?: string;
   /** What the user said in this conversation: the current message and the earlier ones in the history window. */
   userText: readonly string[];
+  /** The current message. A remember call is "explicit" only when the user asked to remember in it. */
+  message?: string;
   maxWrites?: number;
 }): MemoryTurn {
   const { store } = input;
@@ -335,7 +337,9 @@ export function memoryTools(input: {
           Object.keys(args).some((key) => key !== "text" && key !== "kind" && key !== "force")) {
         throw new ToolInputError(`Envie text (até ${memoryText} caracteres) e, se quiser, kind igual a fact ou profile.`);
       }
-      return stage.add({ text: args.text, kind: args.kind === "profile" ? "profile" : "fact", force: args.force === true });
+      // The model calling remember on its own for a passing mention is not the user asking: that is "extracted".
+      const origin = input.message === undefined || asksToRemember(input.message) ? "explicit" : "extracted";
+      return stage.add({ text: args.text, kind: args.kind === "profile" ? "profile" : "fact", force: args.force === true, origin });
     },
   };
 
