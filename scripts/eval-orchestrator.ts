@@ -125,6 +125,8 @@ interface Outcome {
   model: string; scenario: string; repetition: number; pass: boolean; note: string; expect: Expect; tools: string[];
   toolCorrect: boolean; toolErrors: number; dishonest: boolean; providerErrors: number; rateLimited: number;
   latencies: number[]; replyChars: number; aborted?: string;
+  /** Which kind of call failed at the provider: conversation, memory (the memory agent) or other (specialists, summary). */
+  errorRoles?: string[];
 }
 
 const zero = (value: unknown) => value === 0 || (typeof value === "string" && /^0(?:\.0+)?$/.test(value));
@@ -262,7 +264,8 @@ async function runScenario(candidate: Candidate, scenario: Scenario, key: string
       toolErrors: scenario.corruptFirstCall ? Math.max(0, toolErrors - 1) : toolErrors, dishonest,
       providerErrors: calls.filter(({ failure: value }) => value && !value.startsWith("rate_limited")).length,
       rateLimited: calls.filter(({ failure: value }) => value?.startsWith("rate_limited")).length,
-      latencies: conversation.filter(({ failure: value }) => !value).map(({ ms }) => ms), replyChars: observed.final.length };
+      latencies: conversation.filter(({ failure: value }) => !value).map(({ ms }) => ms), replyChars: observed.final.length,
+      errorRoles: calls.flatMap(({ role, failure: value }) => value ? [role + ":" + value] : []) };
   } finally {
     conversations.close(); memory.close(); checkpoints.close(); components.close();
     rmSync(directory, { recursive: true, force: true });
@@ -281,6 +284,7 @@ const { list, catalogSize, fetchedAt } = await candidates();
 console.log(JSON.stringify({ catalog: { fetchedAt, models: catalogSize, candidates: list.map(({ id, context, toolChoice, reasoning }) => ({ id, context, toolChoice, reasoning })) } }));
 
 const all: Outcome[] = [];
+const droppedModels = new Map<string, string>();
 for (const candidate of list) {
   let providerFailures = 0;
   let dropped: string | undefined;
@@ -306,7 +310,7 @@ for (const candidate of list) {
       if (repetition === 0 && index === 2 && providerFailures === 3) { dropped = "falha sistemática no provedor"; break; }
     }
   }
-  if (dropped) console.log(JSON.stringify({ model: candidate.id, dropped }));
+  if (dropped) { droppedModels.set(candidate.id, dropped); console.log(JSON.stringify({ model: candidate.id, dropped })); }
 }
 
 // ---------- score ----------
@@ -325,18 +329,25 @@ const rows = list.map(({ id }) => {
   const honesty = mine.filter(({ dishonest }) => !dishonest).length / n;
   const argsValid = mine.filter(({ toolErrors }) => toolErrors === 0).length / n;
   const speed = median === null ? 0 : Math.max(0, Math.min(1, 1 - (median - 1_000) / 9_000));
+  // Share of scenarios with no provider error in any call, the memory agent and specialists included.
+  const reliability = mine.filter(({ providerErrors, rateLimited }) => !providerErrors && !rateLimited).length / n;
   // Tool accuracy and honesty weigh more than speed.
-  const score = Math.round(100 * (0.3 * passRate + 0.3 * toolRate + 0.25 * honesty + 0.1 * argsValid + 0.05 * speed));
-  return { model: id, runs: mine.length, score, pass: passRate, tools: toolRate, honesty, args: argsValid,
+  const score = Math.round(100 * (0.3 * passRate + 0.25 * toolRate + 0.25 * honesty + 0.05 * argsValid + 0.1 * reliability + 0.05 * speed));
+  const dropped = droppedModels.get(id);
+  return { model: id, runs: mine.length, score: dropped ? null : score, dropped, reliability, pass: passRate, tools: toolRate, honesty, args: argsValid,
     providerErrors: mine.reduce((sum, { providerErrors }) => sum + providerErrors, 0), r429: mine.reduce((sum, { rateLimited }) => sum + rateLimited, 0),
     median, p95: percentile(latencies, 0.95),
     replyChars: Math.round(mine.reduce((sum, { replyChars }) => sum + replyChars, 0) / n),
     failed: [...new Set(mine.filter(({ pass }) => !pass).map(({ scenario }) => scenario))] };
-}).sort((a, b) => b.score - a.score);
+}).sort((a, b) => (b.score ?? -1) - (a.score ?? -1));
 
 const pct = (value: number) => Math.round(value * 100) + "%";
-console.log("\n| # | Modelo | Nota | Cenários ok | Tool certa | Honestidade | Args válidos | Erros provedor | 429 | Latência mediana / p95 | Resposta média | Falhou em |");
-console.log("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
-rows.forEach((row, index) => console.log(`| ${index + 1} | \`${row.model}\` | ${row.score} | ${pct(row.pass)} | ${pct(row.tools)} | ${pct(row.honesty)} | ${pct(row.args)} | ` +
-  `${row.providerErrors} | ${row.r429} | ${row.median ?? "-"} / ${row.p95 ?? "-"} ms | ${row.replyChars} | ${row.failed.join(", ") || "-"} |`));
+console.log("\n| # | Modelo | Nota | Execuções | Cenários ok | Tool certa | Honestidade | Args válidos | Sem erro do provedor | Erros / 429 | Latência mediana / p95 | Resposta média | Falhou em |");
+console.log("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
+rows.forEach((row, index) => console.log(row.dropped
+  ? `| ${index + 1} | \`${row.model}\` | descartado | ${row.runs} | | | | | | ${row.providerErrors} / ${row.r429} | | | ${row.dropped} |`
+  : `| ${index + 1} | \`${row.model}\` | ${row.score} | ${row.runs} | ${pct(row.pass)} | ${pct(row.tools)} | ${pct(row.honesty)} | ${pct(row.args)} | ${pct(row.reliability)} | ` +
+    `${row.providerErrors} / ${row.r429} | ${row.median ?? "-"} / ${row.p95 ?? "-"} ms | ${row.replyChars} | ${row.failed.join(", ") || "-"} |`));
+const errorRoles = all.flatMap(({ model, errorRoles: roles }) => (roles ?? []).map((role) => model + " " + role));
+console.log(JSON.stringify({ errorsByRole: Object.entries(errorRoles.reduce<Record<string, number>>((count, key) => ({ ...count, [key]: (count[key] ?? 0) + 1 }), {})) }));
 console.log(JSON.stringify({ ranking: rows.map(({ model, score, runs }) => ({ model, score, runs })) }));
