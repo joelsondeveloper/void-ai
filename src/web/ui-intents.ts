@@ -23,7 +23,7 @@ const panels: readonly (readonly [BuiltinWindow, string])[] = [
   ["usage", "(?:uso|uso e limites|limites|consumo|cotas?)"],
   ["sessions", "(?:sessoes|conversas|historico)"],
   ["operations", "(?:operacoes|execucoes|atividade dos agentes)"],
-  ["memory", "(?:memoria|memorias|lembrancas|o que voce (?:sabe|lembra) de mim)"],
+  ["memory", "(?:memoria|memorias|lembrancas)"],
 ];
 
 const whole = (body: string) => new RegExp("^" + body + "$");

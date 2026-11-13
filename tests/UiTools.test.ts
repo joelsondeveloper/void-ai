@@ -179,3 +179,9 @@ test("a recognized call the registry would not accept is not run: the message go
   assert.deepEqual(await ask("abre o painel secreto"), [{ type: "final", text: "Não sei abrir isso." }]);
   assert.equal(requests.length, 1);
 });
+
+test("asking what VOID knows about the user is a question for the model, not a command to open the memory panel", () => {
+  for (const message of ["o que você sabe sobre mim?", "o que você sabe de mim", "o que você lembra de mim"]) {
+    assert.equal(interfaceCommand(message), undefined, message);
+  }
+});
