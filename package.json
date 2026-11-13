@@ -15,6 +15,7 @@
     "chat:void": "tsx src/examples/mainAgent.ts",
     "chat:void:live": "node --env-file-if-exists=.env --import tsx src/examples/mainAgent.ts --live",
     "benchmark:models:live": "node --env-file-if-exists=.env --import tsx src/examples/mainAgent.ts --benchmark",
+    "eval:orchestrator": "node --env-file-if-exists=.env --import tsx scripts/eval-orchestrator.ts",
     "benchmark:tools:live": "node --env-file-if-exists=.env --import tsx src/examples/benchmarkTools.ts",
     "benchmark:research:live": "node --env-file-if-exists=.env --import tsx src/examples/benchmarkResearch.ts",
     "start": "node dist/index.js",
@@ -25,7 +26,7 @@
     "start:web": "node --env-file-if-exists=.env --import tsx web/server.mjs",
     "start:web:live": "node --env-file-if-exists=.env --import tsx web/server.mjs --live",
     "test:web:browser": "node --import tsx --test web/browser/*.test.mjs",
-    "lint": "biome lint src tests web/app web/browser web/server.mjs"
+    "lint": "biome lint src tests scripts web/app web/browser web/server.mjs"
   },
   "repository": {
     "type": "git",

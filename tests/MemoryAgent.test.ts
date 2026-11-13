@@ -246,3 +246,17 @@ test("a cancelled turn, or a delegation that pauses, writes nothing; one that co
   await main.settled();
   assert.deepEqual(stored(memory), [["profile", "extracted", "O usuário trabalha na Florarte."]]);
 });
+
+test("when the agent keeps nothing, what the fixed rules know is still saved, once", async (t) => {
+  let reply = "[]";
+  const { ask, main, memory } = setup(t, () => "ok", () => reply);
+  await ask("ah, eu moro em Olinda, por isso perguntei do trânsito ontem");
+  await main.settled();
+  assert.deepEqual(stored(memory), [["profile", "extracted", "O usuário mora em Olinda."]]);
+  // The agent and the rules agreeing on the same fact leave one record.
+  reply = ops({ op: "add", kind: "profile", text: "O usuário trabalha na Florarte." });
+  await ask("trabalho na Florarte");
+  await main.settled();
+  assert.deepEqual(stored(memory).map(([, , text]) => text), ["O usuário mora em Olinda.", "O usuário trabalha na Florarte."]);
+  assert.equal(memory.byTopic("trabalho")?.text, "O usuário trabalha na Florarte.");
+});

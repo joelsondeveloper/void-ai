@@ -157,6 +157,13 @@ export function extractMemories(message: string): ExtractedMemory[] {
 export const exclusiveTopic = (topic: string) => !topic.includes(":") || topic.startsWith("pessoa:");
 const stems = (text: string) => new Set(searchTerms(text).filter((term) => term !== "usuario").map((term) => term.slice(0, 4)));
 
+/** True when every word of `next` is already in `stored`: the stored sentence says at least as much. */
+export function covers(stored: string, next: string): boolean {
+  const have = stems(stored);
+  const want = stems(next);
+  return want.size > 0 && [...want].every((term) => have.has(term));
+}
+
 /** How much two sentences say the same thing: the smaller of the two shared-word ratios. */
 export function overlap(a: string, b: string): number {
   const left = stems(a), right = stems(b);

@@ -1051,9 +1051,14 @@ export class MainAgent {
     } catch (error) {
       const { category, code } = describeFailure(error);
       outcome = "fallback:" + (error instanceof ExecutionError ? category + (code ? ":" + code : "") : "invalid_json");
-      refused += stageExtracted(extractMemories(scope.message), turn);
     }
-    const changes = turn.commit();
+    const proposed = turn.commit();
+    // The fixed rules always run after it, through the same path. A free model often answers [] for a passing
+    // mention it should keep (measured: docs/orchestrator-model-eval.md); what the rules know is not left to chance.
+    // What the agent just wrote is in the store now, so the rules mark it with a topic instead of duplicating it.
+    const rules = this.memoryTurn(scope, memory);
+    refused += stageExtracted(extractMemories(scope.message), rules);
+    const changes = merged(proposed, rules.commit());
     this.diagnose(`VOID [memory-write] sessão=${scope.sessionId} via=agent resultado=${outcome} salvos=${changes.added.length} ` +
       `atualizados=${changes.updated.length} apagados=${changes.deleted.length} recusados=${refused + changes.failed}`);
     return changes;

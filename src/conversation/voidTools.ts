@@ -5,7 +5,7 @@ import type { AgentContext } from "../types/context.js";
 import { ExecutionError, type ExecutionFailure } from "../types/failure.js";
 import type { AgentResult, AgentTask } from "../types/task.js";
 import { isRecord } from "./mainDecision.js";
-import { exclusiveTopic, overlap } from "./memoryExtractor.js";
+import { covers, exclusiveTopic, overlap } from "./memoryExtractor.js";
 import { isMemoryId, MemoryError, memoryLimits, normalizeMemoryText, searchTerms, type MemoryKind, type MemoryOrigin,
   type MemoryRecord, type MemoryStore } from "./MemoryStore.js";
 import { isUiAction, type UiAction } from "../web/ui-contracts.js";
@@ -240,12 +240,18 @@ export function memoryTools(input: {
       }
       // A statement with a new topic first looks for a record without topic that says the same thing (one the model
       // saved with remember in this very turn, or an older one) and marks it instead of adding a second record.
-      if (topic && !store.byTopic(topic)) {
+      if (topic) {
         const gone = removed();
-        const threshold = exclusiveTopic(topic) ? 0.5 : 0.8;
-        const twin = store.search(text, { limit: 5, kinds: ["fact", "profile"] })
-          .find((record) => record.topic === undefined && !gone.has(record.id) && overlap(text, record.text) >= threshold);
-        if (twin && store.adoptTopic(twin.id, topic) && overlap(text, twin.text) >= 0.8) { known++; return `Já estava na memória (id ${twin.id}).`; }
+        // A stored sentence that already says all of this one ("mora em Olinda, perto do mar" against "mora em
+        // Olinda") is kept as it is: the shorter text never overwrites the richer one.
+        const held = store.byTopic(topic);
+        if (held && !gone.has(held.id) && covers(held.text, text)) { known++; return `Já estava na memória (id ${held.id}).`; }
+        if (!held) {
+          const threshold = exclusiveTopic(topic) ? 0.5 : 0.8;
+          const twin = store.search(text, { limit: 5, kinds: ["fact", "profile"] })
+            .find((record) => record.topic === undefined && !gone.has(record.id) && overlap(text, record.text) >= threshold);
+          if (twin && store.adoptTopic(twin.id, topic) && covers(twin.text, text)) { known++; return `Já estava na memória (id ${twin.id}).`; }
+        }
       }
       // A new fact that shares most of its words with a stored one is probably a change ("mora em Olinda" after
       // "mora em Recife"). Keeping both would leave the memory contradicting itself.
