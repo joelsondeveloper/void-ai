@@ -11,7 +11,7 @@ const memoryClaim = new RegExp(start + "(?:anotei|anotad[oa]|salvei|salv[oa] na 
   "esqueci|apaguei|removi da mem[óo]ria|j[áa] esqueci)" + boundary, "iu");
 
 const interfaceVerb = new RegExp(start + "(?:abri|abrindo|abert[oa]s?|fechei|fechando|fechad[oa]s?|troquei|mudei|ativei|ativad[oa]|restaurei|restaurad[oa]|" +
-  "(?:est[áa]|t[áa]|ficou) na tela)" + boundary, "iu");
+  "(?:est[áa]|est[ãa]o|t[áa]|t[ãa]o|ficou|ficaram) na tela)" + boundary, "iu");
 const interfaceNoun = new RegExp(start + "(?:workspace|painel|pain[ée]is|janela|configura[çc][õo]es|sess[õo]es|opera[çc][õo]es|focus|anel|layout|interface|tela|modo)" + boundary, "iu");
 
 const sentences = (reply: string) => reply.split(/(?<=[.!?…])\s+/);
